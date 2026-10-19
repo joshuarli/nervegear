@@ -14,10 +14,30 @@ struct ImportedAssetModel {
     let minimumY: Float
 }
 
+struct ImportedPlayerAnimation {
+    let frames: [ImportedAssetModel]
+    let frameRate: Float
+    let sourceURLs: [URL]
+
+    func frame(at gaitPhase: Float) -> ImportedAssetModel? {
+        guard !frames.isEmpty else { return nil }
+        let elapsed = Double(gaitPhase / 10)
+        let index = Int(floor(elapsed * Double(frameRate))) % frames.count
+        return frames[index]
+    }
+}
+
+private struct PlayerAnimationManifest: Decodable {
+    let version: Int
+    let frameRate: Float
+    let frames: [String]
+}
+
 struct PlayerAssetFiles {
     let name: String
     let modelURL: URL
     let materialsURL: URL
+    let animationManifestURL: URL
 }
 
 struct AssetLibrary {
@@ -25,6 +45,7 @@ struct AssetLibrary {
     let models: [String: ImportedAssetModel]
     let surfaceMaterials: [String: SurfaceMaterial]
     let terrainLayers: [SurfaceMaterial]
+    let playerAnimation: ImportedPlayerAnimation?
 
     static func load(
         device: MTLDevice,
@@ -42,6 +63,7 @@ struct AssetLibrary {
         var models: [String: ImportedAssetModel] = [:]
         var usedMaterials = Set(catalog.terrainLayers)
         var materialSources = catalog.materials.mapValues { ($0, directory) }
+        var playerAnimation: ImportedPlayerAnimation?
 
         for name in names.sorted() {
             guard isAssetIdentifier(name) else {
@@ -88,6 +110,21 @@ struct AssetLibrary {
                 device: device,
                 allocator: allocator
             )
+            if isRegularFile(player.animationManifestURL) {
+                guard let baseModel = models[player.name] else {
+                    throw AssetImportError.invalid("player animation has no base model")
+                }
+                playerAnimation = try loadPlayerAnimation(
+                    manifestURL: player.animationManifestURL,
+                    baseModel: baseModel,
+                    materialDefinitions: playerCatalog.materials,
+                    usedMaterials: &usedMaterials,
+                    models: &models,
+                    meshBuffers: &meshBuffers,
+                    device: device,
+                    allocator: allocator
+                )
+            }
         }
 
         var surfaceMaterials: [String: SurfaceMaterial] = [:]
@@ -111,8 +148,71 @@ struct AssetLibrary {
             meshes: meshBuffers,
             models: models,
             surfaceMaterials: surfaceMaterials,
-            terrainLayers: terrainLayers
+            terrainLayers: terrainLayers,
+            playerAnimation: playerAnimation
         )
+    }
+
+    private static func loadPlayerAnimation(
+        manifestURL: URL,
+        baseModel: ImportedAssetModel,
+        materialDefinitions: [String: SurfaceDefinition],
+        usedMaterials: inout Set<String>,
+        models: inout [String: ImportedAssetModel],
+        meshBuffers: inout [MeshID: MeshBuffers],
+        device: MTLDevice,
+        allocator: MTKMeshBufferAllocator
+    ) throws -> ImportedPlayerAnimation {
+        let manifest = try JSONDecoder().decode(PlayerAnimationManifest.self, from: Data(contentsOf: manifestURL))
+        guard manifest.version == 1,
+              manifest.frameRate.isFinite, (1...60).contains(manifest.frameRate),
+              (2...60).contains(manifest.frames.count),
+              Set(manifest.frames).count == manifest.frames.count else {
+            throw AssetImportError.invalid("player animation manifest is invalid")
+        }
+
+        var frames: [ImportedAssetModel] = []
+        var sourceURLs: [URL] = []
+        for (index, path) in manifest.frames.enumerated() {
+            let url = try animationFrameURL(path, relativeTo: manifestURL.deletingLastPathComponent())
+            sourceURLs.append(url)
+            let name = "AsunaWalk_\(index)"
+            guard models[name] == nil else {
+                throw AssetImportError.invalid("player animation mesh name collides with another asset: \(name)")
+            }
+            let model = try loadModel(
+                name: name,
+                url: url,
+                materialDefinitions: materialDefinitions,
+                usedMaterials: &usedMaterials,
+                meshBuffers: &meshBuffers,
+                device: device,
+                allocator: allocator
+            )
+            guard model.parts.count == baseModel.parts.count,
+                  zip(model.parts, baseModel.parts).allSatisfy({ framePart, basePart in
+                      framePart.material == basePart.material
+                          && meshBuffers[framePart.mesh]?.indexCount == meshBuffers[basePart.mesh]?.indexCount
+                  }) else {
+                throw AssetImportError.invalid("player animation frame has a different material or mesh layout: \(path)")
+            }
+            frames.append(model)
+        }
+        return ImportedPlayerAnimation(frames: frames, frameRate: manifest.frameRate, sourceURLs: sourceURLs)
+    }
+
+    private static func animationFrameURL(_ path: String, relativeTo directory: URL) throws -> URL {
+        guard !path.hasPrefix("/"), !path.contains("\\"),
+              !path.split(separator: "/", omittingEmptySubsequences: false).contains(where: { $0.isEmpty || $0 == "." || $0 == ".." }) else {
+            throw AssetImportError.invalid("player animation frame path is invalid: \(path)")
+        }
+        let url = path.split(separator: "/").reduce(directory) { result, component in
+            result.appendingPathComponent(String(component), isDirectory: false)
+        }
+        guard isRegularFile(url) else {
+            throw AssetImportError.invalid("player animation frame is missing or invalid: \(path)")
+        }
+        return url
     }
 
     private static func loadModel(

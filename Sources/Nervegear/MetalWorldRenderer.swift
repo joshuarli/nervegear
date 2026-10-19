@@ -29,6 +29,7 @@ struct RuntimeSnapshot: @unchecked Sendable {
     let surfaceMaterials: [String: SurfaceMaterial]
     let terrainLayers: [SurfaceMaterial]
     let playerModel: ImportedAssetModel?
+    let playerAnimation: ImportedPlayerAnimation?
 }
 
 struct PreparedReload: @unchecked Sendable {
@@ -244,14 +245,26 @@ final class WorldRenderer: NSObject, MTKViewDelegate, @unchecked Sendable {
             configuration.materialsURL,
             configuration.assetsURL.appendingPathComponent("materials.json", isDirectory: false)
         ]
+        var optionalURLs: [URL] = []
         if !configuration.primitivePlayer {
             watchedURLs.append(contentsOf: [
                 configuration.playerModelURL,
                 configuration.playerMaterialsURL
             ] + configuration.playerTextureURLs)
+            if let animation = assets.playerAnimation {
+                watchedURLs.append(configuration.playerAnimationManifestURL)
+                watchedURLs.append(contentsOf: animation.sourceURLs)
+            } else {
+                let animationDirectory = configuration.playerAnimationManifestURL.deletingLastPathComponent()
+                optionalURLs.append(configuration.playerAnimationManifestURL)
+                optionalURLs.append(contentsOf: (0..<24).map { index in
+                    animationDirectory.appendingPathComponent(String(format: "walk_%03d.obj", index), isDirectory: false)
+                })
+            }
         }
         fileWatcher = try FileWatcher(
             urls: watchedURLs,
+            optionalURLs: optionalURLs,
             onChange: { [weak self] in self?.reloadFiles() }
         )
         fileWatcher?.start()
@@ -330,11 +343,13 @@ final class WorldRenderer: NSObject, MTKViewDelegate, @unchecked Sendable {
             shadowTexelSize: SIMD4(1 / Float(shadowTexture.width), 1 / Float(shadowTexture.height), 2.2, 0),
             trailCurve: TrailPath.curve
         )
+        let playerAnimationFrame = isWalking ? active.playerAnimation?.frame(at: walkPhase) : nil
         let playerParts = PlayerAvatar.parts(
             player: playerState,
             gaitPhase: walkPhase,
             isWalking: isWalking,
-            model: active.playerModel
+            model: active.playerModel,
+            animationFrame: playerAnimationFrame
         )
 
         let shadowPass = MTLRenderPassDescriptor()
@@ -740,7 +755,8 @@ final class WorldRenderer: NSObject, MTKViewDelegate, @unchecked Sendable {
             batches: batches,
             surfaceMaterials: assets.surfaceMaterials,
             terrainLayers: assets.terrainLayers,
-            playerModel: playerModel
+            playerModel: playerModel,
+            playerAnimation: primitivePlayer ? nil : assets.playerAnimation
         )
     }
 
@@ -749,7 +765,8 @@ final class WorldRenderer: NSObject, MTKViewDelegate, @unchecked Sendable {
         return PlayerAssetFiles(
             name: "Asuna",
             modelURL: configuration.playerModelURL,
-            materialsURL: configuration.playerMaterialsURL
+            materialsURL: configuration.playerMaterialsURL,
+            animationManifestURL: configuration.playerAnimationManifestURL
         )
     }
 

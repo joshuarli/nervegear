@@ -8,6 +8,7 @@ struct AppConfiguration {
     let playerModelURL: URL
     let playerMaterialsURL: URL
     let playerTextureURLs: [URL]
+    let playerAnimationManifestURL: URL
     let primitivePlayer: Bool
     let sessionURL: URL
     let readyURL: URL?
@@ -78,6 +79,7 @@ struct AppConfiguration {
                 playerDirectory.appendingPathComponent("Textures/badan.png", isDirectory: false),
                 playerDirectory.appendingPathComponent("Textures/wajah.png", isDirectory: false)
             ],
+            playerAnimationManifestURL: playerDirectory.appendingPathComponent("animation/walk.json", isDirectory: false),
             primitivePlayer: primitivePlayer,
             sessionURL: sessionURL,
             readyURL: resolve("--ready-file", defaultPath: nil),

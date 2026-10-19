@@ -8,11 +8,18 @@ final class FileWatcher: @unchecked Sendable {
     private var previousData: [URL: Data] = [:]
     private var previousFailures: [URL: String] = [:]
 
-    init(urls: [URL], onChange: @escaping () -> Void) throws {
-        self.urls = urls
+    init(urls: [URL], optionalURLs: [URL] = [], onChange: @escaping () -> Void) throws {
+        self.urls = urls + optionalURLs
         self.onChange = onChange
         for url in urls {
             previousData[url] = try Data(contentsOf: url, options: .mappedIfSafe)
+        }
+        for url in optionalURLs {
+            do {
+                previousData[url] = try Data(contentsOf: url, options: .mappedIfSafe)
+            } catch {
+                previousFailures[url] = error.localizedDescription
+            }
         }
         source = DispatchSource.makeTimerSource(queue: queue)
         source.schedule(deadline: .now() + .milliseconds(450), repeating: .milliseconds(450), leeway: .milliseconds(120))

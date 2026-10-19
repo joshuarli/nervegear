@@ -11,13 +11,14 @@ enum PlayerAvatar {
         player: PlayerState,
         gaitPhase: Float,
         isWalking: Bool,
-        model: ImportedAssetModel?
+        model: ImportedAssetModel?,
+        animationFrame: ImportedAssetModel?
     ) -> [PlayerDrawPart] {
         if let model {
             let modelMatrix = translation(player.position.simd - SIMD3(0, model.minimumY, 0)) * rotationY(player.yaw)
-            return model.parts.map { part in
+            return model.parts.enumerated().map { index, part in
                 PlayerDrawPart(
-                    mesh: part.mesh,
+                    mesh: animationFrame?.parts[index].mesh ?? part.mesh,
                     material: part.material,
                     instance: InstanceData(modelMatrix: modelMatrix, color: SIMD4(repeating: 1))
                 )
