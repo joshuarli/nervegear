@@ -1,10 +1,10 @@
 # Nervegear project roadmap
 
-**Status:** N0.1–N0.3 and N1 implemented; player meadow playtest pending
+**Status:** N0.1–N0.3 and N1 implemented; original N1 player playtest pending. **N1.5 is the newly authorized P0 visual-quality campaign, effective immediately; N2–N5 expansion is on hold until its owner-reviewed gate.**
 **Platform:** macOS native desktop
 **Source of world canon:** `../aincrad2`
 **First playable region:** Floor 1
-**Primary priorities:** Iteration speed → visual identity → ecological simulation → world expansion
+**Primary priorities:** Iteration speed (preserve) → **N1.5 reference-matched hero scene (P0)** → ecological simulation → world expansion
 
 ## Vision
 
@@ -14,7 +14,7 @@ Its first objective is not to recreate Aincrad2's RPG systems. It is to make a s
 
 The player should be able to watch weather change, observe vegetation responding to soil and light, see animals alter their surroundings, and modify the environment while the consequences unfold over time.
 
-The first milestone is a pleasant meadow that you can explore on foot.
+The first visual milestone is a **convincing, walkable, naturalistic rocky meadow** with the visual character of the owner's supplied reference screenshot. It must be achievable with the present native Metal renderer and existing hot-reload workflow, not a new game engine.
 
 ### Non-goals
 
@@ -24,7 +24,7 @@ The first milestone is a pleasant meadow that you can explore on foot.
 - No mobile, browser, or cross-platform implementation.
 - No enormous procedurally generated world.
 - No proprietary game engine.
-- No attempt at photorealism.
+- No vast photorealistic world or engine-scale realism rewrite. **Naturalistic, textured, reference-grade fidelity within one tiny hero scene is explicitly in scope.**
 - No generalized ECS or elaborate engine framework.
 - No wholesale port of Meadowlight.
 - No sophisticated player-facing UI before a world worth displaying exists.
@@ -126,7 +126,7 @@ The spatial map must carry a stable reference to its Aincrad2 location identity,
 
 ### N1.3: Simple but attractive rendering
 
-Use simple stylized rendering for the terrain and generated meadow growth. Load model geometry and diffuse textures through Model I/O and MetalKit.
+N1 established inexpensive initial rendering for the terrain and generated meadow growth. **N1.5 supersedes N1's placeholder-art quality bar**, while retaining Model I/O, MetalKit and the lean native rendering architecture.
 
 Use:
 
@@ -145,7 +145,112 @@ A player can walk around a pleasant meadow and inspect every supplied OBJ model 
 
 ---
 
+## N1.5: P0 rocky meadow visual north star — reference-match recovery (**DO NEXT**)
+
+**Priority and authorization:** This narrowly scoped campaign takes precedence over N2 ecology, N3 ecological depth, general N4 art production, N5 integration, and any further wide-area scene population. The owner specifically authorized work to adapt the current Poly Haven **A Verdant Trail** scene toward the photograph they provided (sunlit grasses, broadleaf thickets, rounded pale weathered boulders, open woodland and distant rolling hills). Continue safeguarding N0 hot reload and N1 movement; neither is to be rewritten. The original N1 hands-on review is still pending, and **only the owner can accept the N1.5 aesthetic**. Do not mistake an agent's screenshot appraisal for approval.
+
+### Objective and visual contract
+
+Produce one **art-directed, convincing 30 × 30 m Floor 1 rocky-meadow hero region**, first in an editable Blender scene, then **visibly comparable inside native Nervegear Metal while walking around**. The hero scene is a technical and artistic quality reference for later ecology, not a gameplay level, new engine, large biome generator or high-poly simulation.
+
+**Target appearance (source of truth: owner's supplied photo, not a generic "Genshin", "Ghibli" or fantasy-packs mood board):**
+
+- Ground: irregular lush, fine-bladed grass in clumps and separated patches; dark green shaded bases, straw-golden illuminated tips, varying heights/widths; a little exposed warm reddish earth, occasional very small flowers and debris. No solid plastic-green lawn or wall-to-wall identical upright cards.
+- Rocks: irregular, naturally rounded, **pale neutral-grey to warm-beige** stone, pitting/mineral discoloration, subtle weathering, relatively sparse moss; half-sunken boulders in **related geological clusters**, not isolated evenly distributed OBJ specimens. Some rocks larger than the player's torso, some fist-sized.
+- Plants: layered low grass → taller grass and forbs → irregular rounded broadleaf shrubs → a few airy deciduous crowns and distant wooded edges. Dense central thickets with **clear openings** and asymmetrical silhouettes. Do not enlarge small shrubs 3× merely to impersonate mature trees.
+- Terrain/composition: gentle but purposeful relief, hummocks, hollows, rock outcrops, traversable grassy slots, one inviting implied footpath, foreground/midground/distant separation. Not a sinusoid with randomly scattered objects; no cliffs or dramatic fantasy ruins.
+- Light/grade: calm slightly warm afternoon sun, soft credible shadows/contact, neutral bright sky, subtle airy distance, natural restrained saturation and non-plastic roughness. Avoid dark fantasy, candy colors, flat-shaded geometric foliage, excessive bloom and artificial color casts.
+- World canon: Floor 1 Horunka is temperate oak/hazel countryside per `../aincrad2/docs/floors/01-town-of-beginnings.md`. The supplied photograph is the **visual/fidelity/composition benchmark**, not a request to transplant a botanically inconsistent South African biome verbatim. Use it to establish beauty; substitute oak/hazel-like or other appropriate broadleaf silhouettes with licensing-verified models where necessary. Preserve the `aincrad2Location` identity.
+
+**Reference availability:** The exact owner-supplied photograph must be accessible to the implementing agent as an external reference, e.g. locally at `References/rocky-meadow-target.png` (suggested location; **not currently asserted to exist**) or in the agent's attached images. Record its real local path/identity and include it in contact-sheet comparisons. Do not silently replace it with a vaguely similar image found online, AI render or a retouched output; if unavailable, complete an asset audit and baseline capture, then request it **before claiming visual acceptance**. Do not redistribute the owner's unknown-license reference as a runtime game asset.
+
+### What currently exists — use it, do not restart
+
+Inspect the latest implementations, not older assumptions:
+
+- `Scenes/world.json`: fixed-seed 30 m scene already places **multiple boulders, rock faces and repeated shrubs** and scatters four `Wild_Grass` variants plus three shrub variants (~4,950 requested scatter instances); do not claim the project is still one grass model and three rocks. The crowd is nearing the scene validator's 5,000-instance cap; **raising counts alone is not an artistic solution**.
+- `tools/blender_mcp/export_verdant_assets.py`: already adapts/export-selects fourteen named OBJ assets, multiple grass variants, textures and material catalog; includes rock-resting logic and aggressively green-tinted material factors. Audit/replace questionable scaling or tinting only with before/after evidence. It exports from an existing `verdant_trail.blend` plus sibling textures into `Assets/Objects`, which is intentionally gitignored.
+- `docs/blender-mcp.md`: existing Blender Lab/MCP bridge and reproducible export procedure. Use this route or a safe batch Blender script, not a new toolchain.
+- `Sources/Nervegear/ModelAssetLoader.swift`, `SurfaceMaterials.swift`, `Shaders/World.metal`: native Model I/O mesh import, diffuse/PBR textures, opacity-masked double-sided vegetation, instanced draws and directional shadowing already exist. Validate parity before building new shader abstractions.
+- `Sources/Nervegear/WorldData.swift`: current scatter is seed-stable but spatially uniform with only path/rock exclusions; `TerrainHeight` supplies simple terrain. This placement model is the most likely **artistic** limitation, alongside insufficient source plant/tree variety and scene composition.
+- `Sources/Nervegear/MetalWorldRenderer.swift`: current renderer has screenshot capture (`--capture-on-launch` writes `.work/tmp/scene.png`), scene/material/shader reload and a working camera/avatar. Preserve these, the current safe rollback behavior, and existing input.
+- `Makefile`, `tools/dev.swift` and `plan.md`: **respect current development command restrictions** (including the current prohibition on `make dev*` in the Available commands section). Check the actual available command(s) before invoking; do not promise or invent a new CLI.
+
+**No dependency on a new glTF loader, Unreal/Unity, RealityKit, a terrain editing GUI, generalized ECS, full physics, runtime Blender, or additional paid asset generators.** All source scans must have a documented commercial-use license; Poly Haven's CC0 assets are a safe first pool. Keep source geometry and materials, not screenshots baked as textures.
+
+### N1.5.0 — Audit, frozen baseline and photographic breakdown
+
+1. Inspect `plan.md`, live scene, latest export code, relevant PBR/terrain shader code, and source Blender scene. Inventory *all* useful original Verdant Trail meshes (and unused variants), geometry scale/axis, diffuse/normal/roughness/opacity maps, and present on-screen proportions. Separate "not imported" from "imported but not placed" and "placed but visually bad".
+2. Render the real **current Metal** baseline and record a short native walkthrough. Save fixed world seed, camera transform/FOV, player position, light, resolution, mesh counts, draw calls, frame time and source asset provenance. Use a repeatable capture; keep bulk PNG/video in ignored `.work/`. Do not forge a Blender image as an engine screenshot.
+3. Make an explicit **reference-to-scene gap ledger** with at least these components: grass morphology/coverage, shrub crowns, mature trees, boulder geometry/material, rock grounding, terrain relief, vegetation clustering, color/exposure, shadows/atmosphere and distance. For each, mark whether the best remedy is an existing mesh, a different licensed asset, Blender art edit, composition-mask edit, or small Metal shading fix.
+4. Select a small visual vocabulary. Prioritize the owner's image over sheer pack/model count. First use the already licensed Verdant Trail sources; source 1–3 additional *verified free* assets only for truly missing silhouettes (e.g. deciduous canopy or meadow grass). If nothing free is good enough, **report the gap** rather than import cartoon-looking substitutes.
+
+**Deliverable:** visual gap ledger, material/mesh inventory, baseline PNGs and chosen hero camera. Do not pass based on CI or asset count.
+
+### N1.5.1 — Create the hero scene in Blender before scaling runtime generation
+
+1. Duplicate the source `.blend` into a **separate, nondestructive Nervegear art scene**; preserve licensed originals and provenance. Blender MCP can place and modify objects, materials, Geometry Nodes and lighting, but the saved art file must remain editable by hand; keep semantic names for reusable assets and authoring groups.
+2. Compose **one camera-matched scene** at approximately the screenshot's relative eye height and distance. Start with a few carefully oriented, interlocking weathered rocks, an irregular shrub mass, several grass strata, a darker wooded edge and an opening/path through the vegetation. Hand-author *formations*, not a scattering of unrelated instances. Establish a good hero frame before populating the remaining 30 m.
+3. Use source PBR scans wherever possible. Reorient, partially bury, vary scale **within plausible bounds**, repair normals/UVs, and selectively recolor materials. **Do not** solve silhouette mismatch with strong green tints or extreme 3–4× enlargement of a small shrub. Replace the mesh/plant when shape is wrong.
+4. Author deterministic spatial **density/height/species/soil/rock-exclusion masks** or simple editable formation definitions for grass, shrubs and trees. Keep paths and composition openings legible. This will later serve N2 light/moisture ecology; don't implement growth or weather simulation now.
+5. Light with a broad neutral-warm sun, plausible sky/ambient fill and modest haze; audit color management/tone mapping. Use real UV textures/normal maps. Save **a Blender reference render at a known resolution/camera**, plus overhead formation/mask view and asset inventory.
+6. Review the Blender scene through at least five viewpoints: hero, player-height approach, side, reverse and overhead. **It is a three-dimensional game**, not a projection trick that falls apart behind the original camera. Fix obvious repetition and billboarding/occlusion artifacts before export.
+
+**Owner gate A:** Show the Blender hero render and five-view contact sheet compared with the supplied photo; explicitly list where it still differs. **Stop for an owner aesthetic verdict before expensive generalization.** If the human is unavailable, complete reproducible export preparation but do not self-certify the art.
+
+### N1.5.2 — Reusable Blender → Nervegear export and semantic scene parity
+
+1. Extend the **existing** `tools/blender_mcp/export_verdant_assets.py` rather than rewriting the whole importer. Export only validated assets, complete intended textures and deterministic asset/transform/formation data. Keep a clear authoring convention (meters, axes, origin, upright, ground contact, winding, alpha). Record source file and license per asset. Avoid committing large raw CC0 packs unless deliberately approved; keep `Assets/` gitignored.
+2. The exported scene must not collapse into a single giant static mesh. Keep **distinct mesh identities and stable per-instance IDs**, terrain/formation masks, group placements and collision/footprint proxies separate from decorative geometry. Distinguish editable terrain geometry from foliage, boulders and canonical future ecological entities.
+3. Update `SceneDocument`/`WorldData.makeObjects` narrowly so the same source mesh can be deliberately placed in many positions, and **do not let global scatter RNG scramble authored placements**. Validate stable IDs, deterministic order, duplicate source usage, bounds and explicit failures for missing art. Preserve the default scene or add a clearly named alternate hero study so the owner can switch safely.
+4. Replace unrestricted uniform random shrub/grass scattering with **art-directed, seed-stable density masks and clustered distributions** only as needed for this one study. Distinguish bare soil, sparse exposed meadow, dense grass pockets, protected shrub thickets, rock margins and trail clearance. Preserve spatial seeds across asset re-export and shader reload. Do not build a generic biome compiler or procedural ecology.
+5. Preserve Nervegear's existing Model I/O/Metal geometry, alpha masks, mipmaps and PBR textures. Export/repack textures in suitable formats with correct sRGB vs linear channel treatment; verify normal handedness and double-sided leaf normals. Ensure material variation persists without nonphysical channel tinting. Add tangents, alpha-aware mip handling, shadow cutouts or improved texture/lighting only if a *specific visible mismatch* requires it.
+6. Ensure actual ground height matches visible terrain and the player walks naturally across slope/rock margins. If authored height/paint masks replace procedural sine terrain, make **rendering, player placement and future ecology share one canonical height/mask source**; no two competing terrain definitions. Avoid rock levitation, sunk shrubs and clipping into a hidden procedural ground plane.
+7. Preserve the current hot-reload loop: tune materials, arrangement, masks, lighting and vegetation density without a full Swift rebuild. On failed data/asset validation retain the last good scene; only explicitly changed assets should require offline Blender re-export. Don't add heavyweight live Blender dependency to gameplay.
+
+**Deliverable:** saved editable Blender source, trusted repeatable export recipe, asset/source manifest, small scene/mask data changes, and a successful native reload of the transformed hero scene.
+
+### N1.5.3 — Reproduce the Blender result in Metal, not approximately
+
+1. Capture **identical** camera poses/FOV, world scale, time of day/sun direction, resolution and content selection in Blender and Nervegear. Compare tone maps/working color space, albedo, rock roughness/normal detail, foliage alpha silhouettes, ambient/direct light, shadows, haze and surface grounding.
+2. For each visual defect, demonstrate the smallest responsible fix: wrong source scale/orientation, missing alpha, wrong texture color space, improper vegetation normals, incorrect material factors, inaccurate terrain blending, absent sky/ambient light, LOD/draw-order or camera mismatch. Do not answer each discrepancy by adding another general-purpose rendering subsystem.
+3. Existing `Shaders/World.metal` supports GGX-like PBR, terrain blending and directional shadows, but the current ambient/tonemapping is simple and path/rock weighting is authored largely in shader terms. Add **localized** improvements where they materially raise fidelity: painterly-naturalistic ambient/sky lighting, rock-to-ground contact, diffuse grass illumination, physically plausible warm sunlight, gentle atmospheric aerial perspective and controllable terrain splat masks. Avoid GI/ray tracing, proprietary runtime engines, giant post-processing stacks or custom HDR render graphs without proof of necessity.
+4. Fix alpha-cutout edges/shadow artifacts and harsh grass repetition at walking distance. Test from normal third-person camera height and zoom, not only the hero screenshot. Do not sacrifice coherent scale, playable paths or player visibility for a prettier overhead still.
+5. Keep iterations rapid: a material, light or layout edit should reflect through existing watch/reload; document when Blender export is actually required. Build one repeatable Blender-vs-Metal contact sheet with synchronized views and a concise **mismatch → cause → fix → remaining** ledger. Pixel diffs may flag drift but cannot certify artistic quality.
+
+**Owner gate B:** The owner inspects the **real Metal** hero frame and short native walk against the Blender study and original photo. Human acceptance is required; model-generated confidence or a passing screenshot hash is not enough.
+
+### N1.5.4 — Walking polish, practical performance and reproducibility
+
+- Retain existing close third-person controls and avatar. Demonstrate a roughly 60–90-second continuous walk through the authored formations, with foreground grass, varied shrub depth, near/far rocks, openings, and turning the camera both directions. No sudden wall of foliage, ugly reverse silhouettes, floating/sunken assets or abrupt scene-boundary emptiness in the normal route.
+- Profile **actual hardware** on this small scene: 1440p steady ~60 FPS is an initial aspiration, not a reason to reduce asset quality blindly. Report median/p95 frametime, CPU/GPU time where measurable, draw calls, vegetation instance counts, triangles, texture memory and reload latency. Fix **measured** hotspots (foliage overdraw, instance submission, texture size/mips, shadow work). Preserve a lower-cost debug art preset when necessary.
+- No arbitrary vegetation count escalation. The present 5,000-instance validator ceiling is a project constraint, **not a beauty target**; design texture cards/cluster meshes, LOD and instance batches judiciously. Increase limits only after profiling and validation.
+- Add a small repeatable **visual smoke fixture** for fixed seed, selected material/asset IDs, named camera positions, and image capture. It may detect broken import, wrong alpha or nondeterministic placement, but it does **not** replace real art feedback. Preserve screenshots as review artifacts and one accepted scene configuration as a regression case.
+- Protect the content supply chain: CC0/license/provenance manifest with source links, texture names and transformations; clear re-export steps and documented missing-local-asset behavior. Do not commit raw asset bundles without intent, commercial-license verification, or enormous binaries.
+- Maintain the existing N0 hot-reload and player-state persistence. Check a failing shader edit, missing asset, invalid authored mask and successful asset update all leave the previous valid scene running until a safe replacement is ready.
+
+### Required handoff, exit criteria and stop condition
+
+Every numbered tranche produces **one reviewable artistic result** (not a mass of unattended tickets). At handoff provide:
+
+1. Commit(s), exact input asset versions/rights, working Blender file path and deterministic export instructions.
+2. Source photo vs Blender hero vs **actual Metal** hero at comparable composition, plus five-angle and walking evidence. Clearly label origins; never substitute a rendered concept mockup for running Nervegear.
+3. Scene seed, named camera transforms, light/exposure settings, reproducible asset manifest and saved scene/mask definitions.
+4. Specific reference-gap ledger with visible improvements and known compromises; owner’s recorded artistic feedback or explicit `PENDING OWNER REVIEW`.
+5. Tests of asset validation, scene restore, deterministic placement, shader/scene reload safety, player collision, and an honest profile of native performance.
+6. The **next smallest artistic decision**, not a speculative ecology backlog.
+
+**N1.5 is done only when the owner explicitly approves both** (a) a Blender hero scene that genuinely resembles the screenshot in shape, material richness, light and composition, **and** (b) comparable native Metal output that remains attractive from normal playable viewpoints. This is deliberately a higher bar than "all meshes imported", "60 FPS", "all tests passed" or "looked fine to the agent". **Until this gate: N2, N3, large-scale N4, N5, extra floors, new wildlife and complex ecology remain paused.**
+
+### Immediate agent instruction (begin now)
+
+Read the latest `plan.md`, `docs/blender-mcp.md`, `Scenes/world.json`, `Sources/Nervegear/WorldData.swift`, `Sources/Nervegear/ModelAssetLoader.swift`, `Sources/Nervegear/MetalWorldRenderer.swift`, `Shaders/World.metal`, `tools/blender_mcp/export_verdant_assets.py`, and `../aincrad2/docs/floors/01-town-of-beginnings.md`. First deliver the **N1.5.0** baseline/gap ledger and the **N1.5.1 Blender hero scene**; get the owner's reaction. Then adapt/export only what is necessary, bring up the matching scene in Metal, compare and iterate. **Do not resume N2 just because the current N1 implementation builds.** 
+
+---
+
 ## N2: A living, mutable ecological core
+
+**ON HOLD:** Do not begin N2, N3, broad N4 content production, or N5 until the N1.5 environment has passed its explicit owner review. N1.5 may prepare ecological spatial identities and masks, but must not implement new ecological dynamics.
 
 **Goal:** Implement a small number of real, interacting environmental systems.
 
@@ -246,7 +351,7 @@ The world shows at least three meaningful, persistent ecological responses to ch
 
 ## N4: Art direction and production pipeline
 
-**Goal:** Establish a consistent and economical Floor 1 aesthetic.
+**Goal (deferred):** Extend the **approved N1.5** environment language into a sustainable Floor 1 asset-production workflow *after* ecological experiments justify expansion. N1.5 already owns the immediate visual direction, initial asset adaptation and Blender-to-Metal fidelity proof; do not restart those from scratch here.
 
 Use Aincrad2's existing icons and content documents as references for form, palette, materials, objects, and tone.
 
