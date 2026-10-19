@@ -14,13 +14,24 @@ struct ImportedAssetModel {
     let minimumY: Float
 }
 
+struct PlayerAssetFiles {
+    let name: String
+    let modelURL: URL
+    let materialsURL: URL
+}
+
 struct AssetLibrary {
     let meshes: [MeshID: MeshBuffers]
     let models: [String: ImportedAssetModel]
     let surfaceMaterials: [String: SurfaceMaterial]
     let terrainLayers: [SurfaceMaterial]
 
-    static func load(device: MTLDevice, directory: URL, names: Set<String>) throws -> AssetLibrary {
+    static func load(
+        device: MTLDevice,
+        directory: URL,
+        names: Set<String>,
+        player: PlayerAssetFiles? = nil
+    ) throws -> AssetLibrary {
         try validateAssetDirectory(directory)
         let catalogURL = directory.appendingPathComponent("materials.json", isDirectory: false)
         let catalog = try JSONDecoder().decode(AssetMaterialCatalog.self, from: Data(contentsOf: catalogURL))
@@ -30,71 +41,65 @@ struct AssetLibrary {
         var meshBuffers: [MeshID: MeshBuffers] = [:]
         var models: [String: ImportedAssetModel] = [:]
         var usedMaterials = Set(catalog.terrainLayers)
+        var materialSources = catalog.materials.mapValues { ($0, directory) }
 
         for name in names.sorted() {
             guard isAssetIdentifier(name) else {
                 throw AssetImportError.invalid("asset name is not a catalog identifier: \(name)")
             }
             let url = directory.appendingPathComponent("\(name).obj", isDirectory: false)
-            guard isRegularFile(url) else {
-                throw AssetImportError.invalid("asset file is missing or invalid: \(url.lastPathComponent)")
-            }
+            models[name] = try loadModel(
+                name: name,
+                url: url,
+                materialDefinitions: catalog.materials,
+                usedMaterials: &usedMaterials,
+                meshBuffers: &meshBuffers,
+                device: device,
+                allocator: allocator
+            )
+        }
 
-            let asset = MDLAsset(url: url, vertexDescriptor: vertexDescriptor(), bufferAllocator: allocator)
-            let (sourceMeshes, metalMeshes) = try MTKMesh.newMeshes(asset: asset, device: device)
-            guard !metalMeshes.isEmpty, metalMeshes.count == sourceMeshes.count else {
-                throw AssetImportError.invalid("Model I/O did not produce meshes for \(name)")
+        if let player {
+            guard isAssetIdentifier(player.name), models[player.name] == nil else {
+                throw AssetImportError.invalid("player asset name collides with a scene asset: \(player.name)")
             }
-
-            var parts: [ImportedAssetPart] = []
-            var minimumY = Float.greatestFiniteMagnitude
-            for (meshIndex, sourceMesh) in sourceMeshes.enumerated() {
-                minimumY = min(minimumY, sourceMesh.boundingBox.minBounds.y)
-                let vertices = try readVertices(from: sourceMesh)
-                guard let vertexBuffer = GeometryFactory.uploadVertices(device: device, vertices: vertices) else {
-                    throw RendererError.gpu("Metal could not allocate vertices for \(name)")
+            let playerDirectory = player.modelURL.deletingLastPathComponent()
+            try validateAssetDirectory(playerDirectory)
+            guard isRegularFile(player.modelURL), isRegularFile(player.materialsURL) else {
+                throw AssetImportError.invalid("player model or material catalog is missing or invalid")
+            }
+            let playerCatalog = try JSONDecoder().decode(
+                AssetMaterialCatalog.self,
+                from: Data(contentsOf: player.materialsURL)
+            )
+            try validate(playerCatalog, includingTerrainLayers: false)
+            for (name, definition) in playerCatalog.materials {
+                guard materialSources[name] == nil else {
+                    throw AssetImportError.invalid("player material name collides with an environment material: \(name)")
                 }
-
-                let metalMesh = metalMeshes[meshIndex]
-                guard let sourceSubmeshes = sourceMesh.submeshes as? [MDLSubmesh],
-                      metalMesh.submeshes.count == sourceSubmeshes.count else {
-                    throw AssetImportError.invalid("Model I/O returned mismatched submeshes for \(name)")
-                }
-
-                for (submeshIndex, submesh) in metalMesh.submeshes.enumerated() {
-                    guard let materialName = sourceSubmeshes[submeshIndex].material?.name,
-                          catalog.materials[materialName] != nil else {
-                        throw AssetImportError.invalid("asset \(name) has a submesh without a material in materials.json")
-                    }
-                    let id = MeshID.asset(name: name, part: parts.count)
-                    meshBuffers[id] = MeshBuffers(
-                        vertices: vertexBuffer,
-                        indices: submesh.indexBuffer.buffer,
-                        indexCount: submesh.indexCount,
-                        indexType: submesh.indexType,
-                        vertexOffset: 0,
-                        indexOffset: submesh.indexBuffer.offset
-                    )
-                    parts.append(ImportedAssetPart(mesh: id, material: materialName))
-                    usedMaterials.insert(materialName)
-                }
+                materialSources[name] = (definition, playerDirectory)
             }
-            guard minimumY.isFinite, !parts.isEmpty else {
-                throw AssetImportError.invalid("asset has no drawable geometry: \(name)")
-            }
-            models[name] = ImportedAssetModel(parts: parts, minimumY: minimumY)
+            models[player.name] = try loadModel(
+                name: player.name,
+                url: player.modelURL,
+                materialDefinitions: playerCatalog.materials,
+                usedMaterials: &usedMaterials,
+                meshBuffers: &meshBuffers,
+                device: device,
+                allocator: allocator
+            )
         }
 
         var surfaceMaterials: [String: SurfaceMaterial] = [:]
         var textureCache: [String: MTLTexture] = [:]
         for name in usedMaterials.sorted() {
-            guard let definition = catalog.materials[name] else {
+            guard let (definition, materialDirectory) = materialSources[name] else {
                 throw AssetImportError.invalid("material is missing from materials.json: \(name)")
             }
             surfaceMaterials[name] = try loadSurfaceMaterial(
                 definition,
                 using: textureLoader,
-                directory: directory,
+                directory: materialDirectory,
                 cache: &textureCache
             )
         }
@@ -110,14 +115,75 @@ struct AssetLibrary {
         )
     }
 
-    private static func validate(_ catalog: AssetMaterialCatalog) throws {
+    private static func loadModel(
+        name: String,
+        url: URL,
+        materialDefinitions: [String: SurfaceDefinition],
+        usedMaterials: inout Set<String>,
+        meshBuffers: inout [MeshID: MeshBuffers],
+        device: MTLDevice,
+        allocator: MTKMeshBufferAllocator
+    ) throws -> ImportedAssetModel {
+        guard isRegularFile(url) else {
+            throw AssetImportError.invalid("asset file is missing or invalid: \(url.lastPathComponent)")
+        }
+        let asset = MDLAsset(url: url, vertexDescriptor: vertexDescriptor(), bufferAllocator: allocator)
+        let (sourceMeshes, metalMeshes) = try MTKMesh.newMeshes(asset: asset, device: device)
+        guard !metalMeshes.isEmpty, metalMeshes.count == sourceMeshes.count else {
+            throw AssetImportError.invalid("Model I/O did not produce meshes for \(name)")
+        }
+
+        var parts: [ImportedAssetPart] = []
+        var minimumY = Float.greatestFiniteMagnitude
+        for (meshIndex, sourceMesh) in sourceMeshes.enumerated() {
+            minimumY = min(minimumY, sourceMesh.boundingBox.minBounds.y)
+            let vertices = try readVertices(from: sourceMesh)
+            guard let vertexBuffer = GeometryFactory.uploadVertices(device: device, vertices: vertices) else {
+                throw RendererError.gpu("Metal could not allocate vertices for \(name)")
+            }
+
+            let metalMesh = metalMeshes[meshIndex]
+            guard let sourceSubmeshes = sourceMesh.submeshes as? [MDLSubmesh],
+                  metalMesh.submeshes.count == sourceSubmeshes.count else {
+                throw AssetImportError.invalid("Model I/O returned mismatched submeshes for \(name)")
+            }
+
+            for (submeshIndex, submesh) in metalMesh.submeshes.enumerated() {
+                guard let materialName = sourceSubmeshes[submeshIndex].material?.name,
+                      materialDefinitions[materialName] != nil else {
+                    throw AssetImportError.invalid("asset \(name) has a submesh without a material in its material catalog")
+                }
+                let id = MeshID.asset(name: name, part: parts.count)
+                meshBuffers[id] = MeshBuffers(
+                    vertices: vertexBuffer,
+                    indices: submesh.indexBuffer.buffer,
+                    indexCount: submesh.indexCount,
+                    indexType: submesh.indexType,
+                    vertexOffset: 0,
+                    indexOffset: submesh.indexBuffer.offset
+                )
+                parts.append(ImportedAssetPart(mesh: id, material: materialName))
+                usedMaterials.insert(materialName)
+            }
+        }
+        guard minimumY.isFinite, !parts.isEmpty else {
+            throw AssetImportError.invalid("asset has no drawable geometry: \(name)")
+        }
+        return ImportedAssetModel(parts: parts, minimumY: minimumY)
+    }
+
+    private static func validate(_ catalog: AssetMaterialCatalog, includingTerrainLayers: Bool = true) throws {
         guard catalog.version == 1 else {
             throw AssetImportError.invalid("asset material catalog version \(catalog.version) is unsupported")
         }
-        guard catalog.terrainLayers.count == 3,
-              Set(catalog.terrainLayers).count == catalog.terrainLayers.count,
-              catalog.terrainLayers.allSatisfy({ catalog.materials[$0] != nil }) else {
-            throw AssetImportError.invalid("asset material catalog must define three unique terrain layers")
+        if includingTerrainLayers {
+            guard catalog.terrainLayers.count == 3,
+                  Set(catalog.terrainLayers).count == catalog.terrainLayers.count,
+                  catalog.terrainLayers.allSatisfy({ catalog.materials[$0] != nil }) else {
+                throw AssetImportError.invalid("asset material catalog must define three unique terrain layers")
+            }
+        } else if !catalog.terrainLayers.isEmpty {
+            throw AssetImportError.invalid("player materials must not define terrain layers")
         }
         for (name, material) in catalog.materials {
             guard isAssetIdentifier(name),

@@ -46,14 +46,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, @unc
         view.colorPixelFormat = .bgra8Unorm_srgb
         view.depthStencilPixelFormat = .depth32Float
         view.sampleCount = 1
+        view.framebufferOnly = !configuration.screenshotOnLaunch
         view.clearColor = MTLClearColor(red: 0.58, green: 0.76, blue: 0.88, alpha: 1)
-        view.framebufferOnly = true
         let renderer = try WorldRenderer(view: view, device: device, configuration: configuration)
         self.renderer = renderer
 
         self.worldView = view
         view.orbitCamera = { [weak renderer] x, y in renderer?.orbitCamera(horizontal: x, vertical: y) }
         view.zoomCamera = { [weak renderer] delta in renderer?.zoomCamera(delta: delta) }
+        view.captureScreenshot = { [weak renderer] in renderer?.requestScreenshot() }
 
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 1360, height: 900),

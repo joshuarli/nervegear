@@ -15,54 +15,187 @@
   "objects": [
     {
       "asset": "Boulder_01",
-      "x": -8.7,
-      "z": -6.8,
-      "scale": 1.1,
+      "x": -10.1,
+      "z": 5.0,
+      "scale": 0.45,
       "rotation": 0.3
     },
     {
+      "asset": "Boulder_02",
+      "x": 9.6,
+      "z": 7.4,
+      "scale": 0.42,
+      "rotation": 1.8
+    },
+    {
+      "asset": "Boulder_03",
+      "x": -10.8,
+      "z": -9.8,
+      "scale": 0.45,
+      "rotation": 4.8
+    },
+    {
+      "asset": "Rock_07",
+      "x": -7.8,
+      "z": 3.2,
+      "scale": 0.36,
+      "rotation": 2.2
+    },
+    {
+      "asset": "Rock_08",
+      "x": 10.1,
+      "z": 3.8,
+      "scale": 0.34,
+      "rotation": 5.2
+    },
+    {
       "asset": "Rock_Face",
-      "x": 8.6,
-      "z": -8.3,
-      "scale": 0.74,
-      "rotation": 2.1
+      "x": 11.4,
+      "z": -7.1,
+      "scale": 0.38,
+      "rotation": 2.6
     },
     {
       "asset": "Rock_Face_2",
-      "x": 8.1,
-      "z": 8.4,
-      "scale": 0.55,
+      "x": -8.4,
+      "z": -8.6,
+      "scale": 0.38,
+      "rotation": 3.6
+    },
+    {
+      "asset": "Shrub_02",
+      "x": -4.5,
+      "z": 2.6,
+      "scale": 1.25,
+      "rotation": 1.1
+    },
+    {
+      "asset": "Shrub_03",
+      "x": -5.5,
+      "z": 5.4,
+      "scale": 3.0,
+      "rotation": 2.5
+    },
+    {
+      "asset": "Shrub_04",
+      "x": -4.4,
+      "z": 8.3,
+      "scale": 3.2,
       "rotation": 4.4
+    },
+    {
+      "asset": "Shrub_02",
+      "x": 4.7,
+      "z": 1.7,
+      "scale": 1.2,
+      "rotation": 3.5
+    },
+    {
+      "asset": "Shrub_03",
+      "x": 5.6,
+      "z": 4.7,
+      "scale": 3.1,
+      "rotation": 5.0
+    },
+    {
+      "asset": "Shrub_04",
+      "x": 4.6,
+      "z": 7.8,
+      "scale": 3.3,
+      "rotation": 0.3
+    },
+    {
+      "asset": "Shrub_02",
+      "x": -4.6,
+      "z": -2.6,
+      "scale": 1.2,
+      "rotation": 0.7
+    },
+    {
+      "asset": "Shrub_03",
+      "x": -5.5,
+      "z": -5.4,
+      "scale": 3.0,
+      "rotation": 2.1
+    },
+    {
+      "asset": "Shrub_04",
+      "x": -4.5,
+      "z": -8.1,
+      "scale": 3.2,
+      "rotation": 4.0
+    },
+    {
+      "asset": "Shrub_02",
+      "x": 4.6,
+      "z": -1.8,
+      "scale": 1.2,
+      "rotation": 2.8
+    },
+    {
+      "asset": "Shrub_03",
+      "x": 5.7,
+      "z": -4.8,
+      "scale": 3.1,
+      "rotation": 4.2
+    },
+    {
+      "asset": "Shrub_04",
+      "x": 4.8,
+      "z": -7.6,
+      "scale": 3.3,
+      "rotation": 5.5
     }
   ],
   "vegetation": [
     {
       "asset": "Wild_Grass",
-      "count": 1800,
-      "minimumScale": 1.0,
-      "maximumScale": 1.35,
-      "pathClearance": 1.9
+      "count": 1125,
+      "minimumScale": 1.1,
+      "maximumScale": 1.6,
+      "pathClearance": 1.8
+    },
+    {
+      "asset": "Wild_Grass_B",
+      "count": 1125,
+      "minimumScale": 1.1,
+      "maximumScale": 1.6,
+      "pathClearance": 1.8
+    },
+    {
+      "asset": "Wild_Grass_C",
+      "count": 1125,
+      "minimumScale": 1.1,
+      "maximumScale": 1.6,
+      "pathClearance": 1.8
+    },
+    {
+      "asset": "Wild_Grass_D",
+      "count": 1125,
+      "minimumScale": 1.1,
+      "maximumScale": 1.6,
+      "pathClearance": 1.8
     },
     {
       "asset": "Shrub_02",
-      "count": 20,
-      "minimumScale": 0.85,
-      "maximumScale": 1.15,
-      "pathClearance": 2.4
+      "count": 150,
+      "minimumScale": 0.9,
+      "maximumScale": 1.35,
+      "pathClearance": 2.2
     },
     {
       "asset": "Shrub_03",
-      "count": 20,
-      "minimumScale": 0.95,
-      "maximumScale": 1.35,
-      "pathClearance": 2.4
+      "count": 150,
+      "minimumScale": 2.5,
+      "maximumScale": 3.2,
+      "pathClearance": 2.2
     },
     {
       "asset": "Shrub_04",
-      "count": 20,
-      "minimumScale": 1.1,
-      "maximumScale": 1.55,
-      "pathClearance": 2.4
+      "count": 150,
+      "minimumScale": 2.7,
+      "maximumScale": 3.4,
+      "pathClearance": 2.2
     }
   ]
 }

@@ -1,6 +1,7 @@
 import bpy
 import json
 import os
+from mathutils import Vector
 from pathlib import Path
 
 blend_path = Path(bpy.data.filepath)
@@ -18,17 +19,26 @@ texture_root.mkdir(parents=True, exist_ok=True)
 
 asset_objects = {
     "Boulder_01": ("boulder_01.002", 1.0),
+    "Boulder_02": ("boulder_01.003", 1.0),
+    "Boulder_03": ("boulder_01.004", 1.0),
     "Rock_Face": ("rock_face", 1.0),
     "Rock_Face_2": ("rock_face_2.001", 1.0),
+    "Rock_07": ("rock_07.001", 2.5),
+    "Rock_08": ("rock_08.001", 2.0),
     "Shrub_02": ("shrub_02_a", 1.0),
     "Shrub_03": ("shrub_03_a", 2.2),
     "Shrub_04": ("shrub_04_c", 4.0),
-    "Wild_Grass": ("grass_medium_02_a", 5.0),
+    "Wild_Grass": ("grass_medium_02_e", 3.0),
+    "Wild_Grass_B": ("grass_medium_02_d", 3.4),
+    "Wild_Grass_C": ("grass_medium_02_c", 4.5),
+    "Wild_Grass_D": ("grass_medium_02_b", 6.0),
 }
 texture_specs = {
     "boulder_01": {"baseColor": "boulder_01_diff.png", "normal": "boulder_01_nor_gl.png", "roughness": "boulder_01_rough.png"},
     "rock_face": {"baseColor": "rock_face_diff.png", "normal": "rock_face_nor_gl.png", "roughness": "rock_face_rough.png"},
     "rock_face_2": {"baseColor": "rock_face_2_diff.png", "normal": "rock_face_2_nor_gl.png", "roughness": "rock_face_2_rough.png"},
+    "rock_07": {"baseColor": "rock_07_diff.png", "normal": "rock_07_nor_gl.png", "roughness": "rock_07_rough.png"},
+    "rock_08": {"baseColor": "rock_08_diff.png", "normal": "rock_08_nor_gl.png", "roughness": "rock_08_rough.png"},
     "shrub_02": {"baseColor": "shrub_02_diff.png", "normal": "shrub_02_nor_gl.png", "roughness": "shrub_02_rough.png", "opacity": "shrub_02_alpha.png"},
     "shrub_03": {"baseColor": "shrub_03_diff.png", "normal": "shrub_03_nor_gl.png", "roughness": "shrub_03_rough.png", "opacity": "shrub_03_alpha.png"},
     "shrub_04": {"baseColor": "shrub_04_diff.png", "normal": "shrub_04_nor_gl.png", "roughness": "shrub_04_rough.png", "opacity": "shrub_04_alpha.png"},
@@ -38,6 +48,72 @@ texture_specs = {
     "rock_face_01": {"baseColor": "rock_face_01_diff.png", "normal": "rock_face_01_nor_gl.png", "roughness": "rock_face_01_rough.png"},
 }
 
+def settle_rock(mesh):
+    mesh.update()
+    bounds = [vertex.co for vertex in mesh.vertices]
+    dimensions = [max(vertex[axis] for vertex in bounds) - min(vertex[axis] for vertex in bounds) for axis in range(3)]
+    plane_tolerance = max(dimensions) * 0.015
+    groups = {}
+    for polygon in mesh.polygons:
+        normal = polygon.normal.normalized()
+        offset = normal.dot(polygon.center)
+        key = tuple(round(component / 0.05) for component in normal) + (round(offset / plane_tolerance),)
+        area, normal_sum, centers, vertex_ids = groups.get(key, (0.0, Vector(), [], set()))
+        groups[key] = (area + polygon.area, normal_sum + normal * polygon.area, centers + [polygon.center.copy()], vertex_ids.union(polygon.vertices))
+    volume = 0.0
+    weighted_center = Vector()
+    for polygon in mesh.polygons:
+        vertices = [mesh.vertices[index].co for index in polygon.vertices]
+        for index in range(1, len(vertices) - 1):
+            first, second, third = vertices[0], vertices[index], vertices[index + 1]
+            signed_volume = first.dot(second.cross(third)) / 6.0
+            volume += signed_volume
+            weighted_center += (first + second + third) * (signed_volume / 4.0)
+    center_of_mass = weighted_center / volume if abs(volume) > 1e-8 else sum(bounds, Vector()) / len(bounds)
+    candidates = []
+    for key, (area, normal_sum, centers, vertex_ids) in groups.items():
+        contact_normal = normal_sum.normalized()
+        plane_center = sum(centers, Vector()) / len(centers)
+        points = [mesh.vertices[index].co for index in vertex_ids]
+        if max(abs((point - plane_center).dot(contact_normal)) for point in points) > plane_tolerance:
+            continue
+        reference_axis = Vector((0.0, 0.0, 1.0)) if abs(contact_normal.z) < 0.9 else Vector((1.0, 0.0, 0.0))
+        tangent = contact_normal.cross(reference_axis).normalized()
+        bitangent = contact_normal.cross(tangent).normalized()
+        projected = sorted({(round(point.dot(tangent), 6), round(point.dot(bitangent), 6)) for point in points})
+        hull = []
+        for point in projected:
+            while len(hull) >= 2 and (hull[-1][0] - hull[-2][0]) * (point[1] - hull[-1][1]) - (hull[-1][1] - hull[-2][1]) * (point[0] - hull[-1][0]) <= 0:
+                hull.pop()
+            hull.append(point)
+        lower_hull = len(hull)
+        for point in reversed(projected[:-1]):
+            while len(hull) >= lower_hull + 1 and (hull[-1][0] - hull[-2][0]) * (point[1] - hull[-1][1]) - (hull[-1][1] - hull[-2][1]) * (point[0] - hull[-1][0]) <= 0:
+                hull.pop()
+            hull.append(point)
+        hull.pop()
+        if len(hull) < 3:
+            continue
+        center_2d = (center_of_mass.dot(tangent), center_of_mass.dot(bitangent))
+        margins = []
+        for index, first in enumerate(hull):
+            second = hull[(index + 1) % len(hull)]
+            edge_x, edge_y = second[0] - first[0], second[1] - first[1]
+            edge_length = (edge_x * edge_x + edge_y * edge_y) ** 0.5
+            margins.append((edge_x * (center_2d[1] - first[1]) - edge_y * (center_2d[0] - first[0])) / edge_length)
+        margin = min(margins)
+        if margin > max(dimensions) * 0.005:
+            candidates.append((area * margin, area, key, contact_normal, margin))
+    if not candidates:
+        raise ValueError("rock has no broad support face containing its center of mass")
+    _, _, _, contact_normal, margin = max(candidates)
+    rotation = contact_normal.normalized().rotation_difference(Vector((0.0, 0.0, -1.0)))
+    center = sum(bounds, Vector()) / len(bounds)
+    for vertex in mesh.vertices:
+        vertex.co = center + rotation @ (vertex.co - center)
+    mesh.update()
+    return margin
+
 surface_materials = {}
 image_settings = bpy.context.scene.render.image_settings
 previous_image_settings = (image_settings.color_depth, image_settings.color_mode, image_settings.quality)
@@ -46,7 +122,7 @@ previous_active_object = bpy.context.view_layer.objects.active
 try:
     for material_name, maps in texture_specs.items():
         surface = {
-            "baseColorFactor": [1.0, 1.0, 1.0, 1.0],
+            "baseColorFactor": [0.48, 1.0, 0.36, 1.0] if material_name == "grass_medium_02" else ([0.48, 1.0, 0.62, 1.0] if material_name.startswith("shrub_") else [1.0, 1.0, 1.0, 1.0]),
             "roughnessFactor": 1.0,
             "metallicFactor": 0.0,
             "alphaCutoff": 0.48,
@@ -106,6 +182,7 @@ for asset_name, (source_name, scale_factor) in asset_objects.items():
         duplicate.select_set(True)
         bpy.context.view_layer.objects.active = duplicate
         bpy.ops.object.transform_apply(location=False, rotation=True, scale=True)
+        support_margin = settle_rock(duplicate.data) if asset_name.startswith(("Boulder_", "Rock_")) else None
         xs = [float(vertex.co.x) for vertex in duplicate.data.vertices]
         ys = [float(vertex.co.y) for vertex in duplicate.data.vertices]
         zs = [float(vertex.co.z) for vertex in duplicate.data.vertices]
@@ -143,7 +220,7 @@ for asset_name, (source_name, scale_factor) in asset_objects.items():
             lines.append(f"map_d {surface['opacity']}")
         mtl_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
         vertex_count = sum(1 for line in filepath.read_text(encoding="utf-8").splitlines() if line.startswith("v "))
-        exports.append({"asset": asset_name, "source": source_name, "material": material_name, "faces": len(duplicate.data.polygons), "obj_vertices": vertex_count, "scale_factor": scale_factor})
+        exports.append({"asset": asset_name, "source": source_name, "material": material_name, "faces": len(duplicate.data.polygons), "obj_vertices": vertex_count, "scale_factor": scale_factor, "support_margin": support_margin})
     finally:
         bpy.data.objects.remove(duplicate, do_unlink=True)
         bpy.data.meshes.remove(duplicate_mesh)

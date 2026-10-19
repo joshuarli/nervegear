@@ -1,12 +1,29 @@
 import simd
 
 struct PlayerDrawPart {
-    var primitive: Primitive
+    var mesh: MeshID
+    var material: String?
     var instance: InstanceData
 }
 
 enum PlayerAvatar {
-    static func parts(player: PlayerState, gaitPhase: Float, isWalking: Bool) -> [PlayerDrawPart] {
+    static func parts(
+        player: PlayerState,
+        gaitPhase: Float,
+        isWalking: Bool,
+        model: ImportedAssetModel?
+    ) -> [PlayerDrawPart] {
+        if let model {
+            let modelMatrix = translation(player.position.simd - SIMD3(0, model.minimumY, 0)) * rotationY(player.yaw)
+            return model.parts.map { part in
+                PlayerDrawPart(
+                    mesh: part.mesh,
+                    material: part.material,
+                    instance: InstanceData(modelMatrix: modelMatrix, color: SIMD4(repeating: 1))
+                )
+            }
+        }
+
         let stride = isWalking ? sin(gaitPhase) * 0.52 : 0
         let bob = isWalking ? abs(sin(gaitPhase * 2)) * 0.035 : 0
         return [
@@ -35,7 +52,7 @@ enum PlayerAvatar {
             * translation(position)
             * rotationXMatrix(rotationX)
             * scaling(scale)
-        return PlayerDrawPart(primitive: primitive, instance: InstanceData(modelMatrix: model, color: color))
+        return PlayerDrawPart(mesh: .primitive(primitive), material: nil, instance: InstanceData(modelMatrix: model, color: color))
     }
 
     private static func translation(_ value: SIMD3<Float>) -> simd_float4x4 {

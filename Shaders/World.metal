@@ -12,6 +12,7 @@ struct FrameUniforms {
     float4 lightDirection;
     float4 cameraPosition;
     float4 shadowTexelSize;
+    float4 trailCurve;
 };
 
 struct MaterialUniforms {
@@ -221,12 +222,15 @@ fragment float4 world_fragment(
     if (material.flags.z != 0) {
         float slope = 1.0 - max(normal.y, 0.0);
         float rockWeight = smoothstep(0.25, 0.62, slope) * 0.82;
-        float pathWeight = (1.0 - smoothstep(1.15, 1.85, abs(input.worldPosition.x))) * (1.0 - rockWeight);
+        float pathCenterX = frame.trailCurve.x * sin(input.worldPosition.z * frame.trailCurve.y)
+            + frame.trailCurve.z * sin(input.worldPosition.z * frame.trailCurve.w);
+        float pathWeight = (1.0 - smoothstep(1.0, 1.7, abs(input.worldPosition.x - pathCenterX))) * (1.0 - rockWeight);
         float3 weights = float3(max(0.0, 1.0 - pathWeight - rockWeight), pathWeight, rockWeight);
         float2 forestUV = input.worldPosition.xz * terrainMaterials.forest.surfaceProperties.w;
         float2 dirtUV = input.worldPosition.xz * terrainMaterials.dirt.surfaceProperties.w;
         float2 rockUV = input.worldPosition.xz * terrainMaterials.rock.surfaceProperties.w;
         float3 forestColor = forestBaseColor.sample(materialSampler, forestUV).rgb * terrainMaterials.forest.baseColorFactor.rgb;
+        forestColor *= float3(0.48, 1.65, 0.30);
         float3 dirtColor = dirtBaseColor.sample(materialSampler, dirtUV).rgb * terrainMaterials.dirt.baseColorFactor.rgb;
         float3 rockColor = rockBaseColor.sample(materialSampler, rockUV).rgb * terrainMaterials.rock.baseColorFactor.rgb;
         albedo = (forestColor * weights.x + dirtColor * weights.y + rockColor * weights.z)

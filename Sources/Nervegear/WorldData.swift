@@ -133,6 +133,14 @@ struct SessionDocument: Codable {
     var player: PlayerState
 }
 
+enum TrailPath {
+    static let curve = SIMD4<Float>(2.6, 0.22, 0.6, 0.46)
+
+    static func centerX(at z: Float) -> Float {
+        curve.x * sin(z * curve.y) + curve.z * sin(z * curve.w)
+    }
+}
+
 enum WorldDataError: LocalizedError {
     case invalid(String)
 
@@ -178,15 +186,13 @@ enum WorldData {
               abs(position.z) < scene.world.extent * 0.5 - 2 else {
             throw WorldDataError.invalid("scene playerStart must be finite and inside the world bounds")
         }
-        var objectIDs = Set<String>()
         for object in scene.objects {
             guard isAssetIdentifier(object.asset),
                   [object.x, object.z, object.scale, object.rotation].allSatisfy(\.isFinite),
                   (0.05...12).contains(object.scale),
                   abs(object.x) < scene.world.extent * 0.5 - 1,
-                  abs(object.z) < scene.world.extent * 0.5 - 1,
-                  objectIDs.insert(object.asset).inserted else {
-                throw WorldDataError.invalid("scene objects must have unique asset names and finite transforms inside the world bounds")
+                  abs(object.z) < scene.world.extent * 0.5 - 1 else {
+                throw WorldDataError.invalid("scene objects must have valid asset names and finite transforms inside the world bounds")
             }
         }
         var scatterAssets = Set<String>()
@@ -269,13 +275,11 @@ enum WorldData {
                 let x = random.range(-limit, limit)
                 let z = random.range(-limit, limit)
                 let scale = random.range(scatter.minimumScale, scatter.maximumScale)
-                guard abs(x) >= scatter.pathClearance,
+                guard abs(x - TrailPath.centerX(at: z)) >= scatter.pathClearance,
                       simd_distance(SIMD2(x, z), SIMD2(scene.playerStart.x, scene.playerStart.z)) >= 1.5,
-                      !scene.objects.contains(where: { simd_distance(SIMD2(x, z), SIMD2($0.x, $0.z)) < 1.6 * $0.scale + 0.8 }),
-                      scatter.asset == "Wild_Grass" || !objects.contains(where: {
-                          guard case .asset(let name, _) = $0.mesh, name == scatter.asset else { return false }
-                          let offset = SIMD2(x - $0.transform.position.x, z - $0.transform.position.z)
-                          return simd_length(offset) < 0.8 * scale
+                      !scene.objects.contains(where: {
+                          isRockAsset($0.asset)
+                              && simd_distance(SIMD2(x, z), SIMD2($0.x, $0.z)) < 1.6 * $0.scale + 0.8
                       }) else {
                     continue
                 }
@@ -298,9 +302,7 @@ enum WorldData {
     }
 
     static func terrainHeight(x: Float, z: Float, world: WorldSettings) -> Float {
-        0.48 * sin(x * 0.075) * cos(z * 0.068)
-            + 0.24 * sin((x + z) * 0.13)
-            + 0.10 * sin(x * 0.21 - z * 0.16)
+        TerrainHeight.value(x: x, z: z, seed: world.seed)
     }
 
     private static func assetTransform(
@@ -326,6 +328,10 @@ enum WorldData {
 
     private static func isAssetIdentifier(_ value: String) -> Bool {
         value.range(of: #"^[A-Za-z0-9_]+$"#, options: .regularExpression) != nil
+    }
+
+    private static func isRockAsset(_ value: String) -> Bool {
+        value.hasPrefix("Boulder_") || value.hasPrefix("Rock_")
     }
 }
 

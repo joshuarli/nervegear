@@ -51,6 +51,7 @@ struct FrameUniforms {
     var lightDirection: SIMD4<Float>
     var cameraPosition: SIMD4<Float>
     var shadowTexelSize: SIMD4<Float>
+    var trailCurve: SIMD4<Float>
 }
 
 enum GeometryFactory {

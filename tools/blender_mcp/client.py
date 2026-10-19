@@ -61,7 +61,7 @@ async def main():
                     print(f"[image result: {block.mimeType}, {len(block.data)} encoded bytes]")
                 else:
                     print(json.dumps(block.model_dump(), ensure_ascii=False))
-            return 1 if result.isError else 0
+            return 1 if result.is_error else 0
 
 
 if __name__ == "__main__":

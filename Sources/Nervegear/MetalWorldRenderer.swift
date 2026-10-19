@@ -28,6 +28,7 @@ struct RuntimeSnapshot: @unchecked Sendable {
     let batches: [DrawBatch]
     let surfaceMaterials: [String: SurfaceMaterial]
     let terrainLayers: [SurfaceMaterial]
+    let playerModel: ImportedAssetModel?
 }
 
 struct PreparedReload: @unchecked Sendable {
@@ -40,6 +41,14 @@ struct PreparedReload: @unchecked Sendable {
 
 struct PendingRender: @unchecked Sendable {
     let snapshot: RuntimeSnapshot
+}
+
+private struct ScreenshotReadback: @unchecked Sendable {
+    let buffer: MTLBuffer
+    let width: Int
+    let height: Int
+    let bytesPerRow: Int
+    let byteCount: Int
 }
 
 enum RendererError: LocalizedError {
@@ -68,13 +77,15 @@ final class WorldRenderer: NSObject, MTKViewDelegate, @unchecked Sendable {
     private let configuration: AppConfiguration
     private let workerQueue = DispatchQueue(label: "nervegear.render-reload", qos: .utility)
     private let pendingLock = NSLock()
+    private let screenshotLock = NSLock()
     private var pendingRender: PendingRender?
+    private var screenshotRequested = false
     private var active: RuntimeSnapshot
     private var fileWatcher: FileWatcher?
     private var playerState: PlayerState
     private var cameraYaw: Float
     private var cameraPitch: Float = 0.25
-    private var cameraDistance: Float = 4.4
+    private var cameraDistance: Float = 8.8
     private var followTarget: SIMD3<Float>
     private var walkPhase: Float = 0
     private var isWalking = false
@@ -89,6 +100,7 @@ final class WorldRenderer: NSObject, MTKViewDelegate, @unchecked Sendable {
         sampleCount = view.sampleCount
         self.device = device
         self.configuration = configuration
+        screenshotRequested = configuration.screenshotOnLaunch
         guard let commandQueue = device.makeCommandQueue() else {
             throw RendererError.gpu("Metal could not create a command queue")
         }
@@ -108,7 +120,8 @@ final class WorldRenderer: NSObject, MTKViewDelegate, @unchecked Sendable {
         let assets = try AssetLibrary.load(
             device: device,
             directory: configuration.assetsURL,
-            names: WorldData.assetNames(in: scene)
+            names: WorldData.assetNames(in: scene),
+            player: Self.playerAssetFiles(for: configuration)
         )
         var meshes = primitiveMeshes
         for (id, mesh) in assets.meshes {
@@ -211,6 +224,7 @@ final class WorldRenderer: NSObject, MTKViewDelegate, @unchecked Sendable {
             objects: objects,
             meshes: meshes,
             assets: assets,
+            primitivePlayer: configuration.primitivePlayer,
             device: device
         )
         playerState = session?.player ?? PlayerState(position: scene.playerStart, yaw: 0)
@@ -224,13 +238,20 @@ final class WorldRenderer: NSObject, MTKViewDelegate, @unchecked Sendable {
         view.delegate = self
         view.isPaused = false
         view.enableSetNeedsDisplay = false
+        var watchedURLs = [
+            configuration.shaderURL,
+            configuration.sceneURL,
+            configuration.materialsURL,
+            configuration.assetsURL.appendingPathComponent("materials.json", isDirectory: false)
+        ]
+        if !configuration.primitivePlayer {
+            watchedURLs.append(contentsOf: [
+                configuration.playerModelURL,
+                configuration.playerMaterialsURL
+            ] + configuration.playerTextureURLs)
+        }
         fileWatcher = try FileWatcher(
-            urls: [
-                configuration.shaderURL,
-                configuration.sceneURL,
-                configuration.materialsURL,
-                configuration.assetsURL.appendingPathComponent("materials.json", isDirectory: false)
-            ],
+            urls: watchedURLs,
             onChange: { [weak self] in self?.reloadFiles() }
         )
         fileWatcher?.start()
@@ -242,7 +263,15 @@ final class WorldRenderer: NSObject, MTKViewDelegate, @unchecked Sendable {
     }
 
     func zoomCamera(delta: Float) {
-        cameraDistance = min(max(cameraDistance * exp(-delta * 0.0015), 3.2), 7)
+        cameraDistance = min(max(cameraDistance * exp(-delta * 0.0015), 6.4), 14)
+    }
+
+    @MainActor
+    func requestScreenshot() {
+        view.framebufferOnly = false
+        screenshotLock.lock()
+        screenshotRequested = true
+        screenshotLock.unlock()
     }
 
     func saveSession() throws {
@@ -298,9 +327,15 @@ final class WorldRenderer: NSObject, MTKViewDelegate, @unchecked Sendable {
             lightViewProjection: CameraMath.lightViewProjection(extent: active.scene.world.extent * 0.8),
             lightDirection: SIMD4(lightDirection.x, lightDirection.y, lightDirection.z, 0),
             cameraPosition: SIMD4(cameraPosition.x, cameraPosition.y, cameraPosition.z, 1),
-            shadowTexelSize: SIMD4(1 / Float(shadowTexture.width), 1 / Float(shadowTexture.height), 2.2, 0)
+            shadowTexelSize: SIMD4(1 / Float(shadowTexture.width), 1 / Float(shadowTexture.height), 2.2, 0),
+            trailCurve: TrailPath.curve
         )
-        let playerParts = PlayerAvatar.parts(player: playerState, gaitPhase: walkPhase, isWalking: isWalking)
+        let playerParts = PlayerAvatar.parts(
+            player: playerState,
+            gaitPhase: walkPhase,
+            isWalking: isWalking,
+            model: active.playerModel
+        )
 
         let shadowPass = MTLRenderPassDescriptor()
         shadowPass.depthAttachment.texture = shadowTexture
@@ -380,6 +415,11 @@ final class WorldRenderer: NSObject, MTKViewDelegate, @unchecked Sendable {
             encoder.endEncoding()
         }
 
+        if consumeScreenshotRequest() {
+            MainActor.assumeIsolated {
+                captureScreenshot(from: drawable.texture, commandBuffer: commandBuffer)
+            }
+        }
         commandBuffer.present(drawable)
         commandBuffer.commit()
 
@@ -400,6 +440,87 @@ final class WorldRenderer: NSObject, MTKViewDelegate, @unchecked Sendable {
     }
 
     func mtkView(_ view: MTKView, drawableSizeWillChange size: CGSize) {}
+
+    private func consumeScreenshotRequest() -> Bool {
+        screenshotLock.lock()
+        defer { screenshotLock.unlock() }
+        let requested = screenshotRequested
+        screenshotRequested = false
+        return requested
+    }
+
+    @MainActor
+    private func captureScreenshot(from texture: MTLTexture, commandBuffer: MTLCommandBuffer) {
+        let width = texture.width
+        let height = texture.height
+        let bytesPerRow = (width * 4 + 255) & ~255
+        let byteCount = bytesPerRow * height
+        guard let buffer = device.makeBuffer(length: byteCount, options: .storageModeShared),
+              let encoder = commandBuffer.makeBlitCommandEncoder() else {
+            Self.report("Could not allocate a screenshot readback buffer")
+            view.framebufferOnly = true
+            return
+        }
+        encoder.copy(
+            from: texture,
+            sourceSlice: 0,
+            sourceLevel: 0,
+            sourceOrigin: MTLOrigin(x: 0, y: 0, z: 0),
+            sourceSize: MTLSize(width: width, height: height, depth: 1),
+            to: buffer,
+            destinationOffset: 0,
+            destinationBytesPerRow: bytesPerRow,
+            destinationBytesPerImage: byteCount
+        )
+        encoder.endEncoding()
+        view.framebufferOnly = true
+        let readback = ScreenshotReadback(
+            buffer: buffer,
+            width: width,
+            height: height,
+            bytesPerRow: bytesPerRow,
+            byteCount: byteCount
+        )
+        commandBuffer.addCompletedHandler { [weak self, readback] completedBuffer in
+            guard let self else { return }
+            guard completedBuffer.status == .completed else {
+                Self.report("Screenshot GPU copy failed: \(completedBuffer.error?.localizedDescription ?? "unknown error")")
+                return
+            }
+            let pixels = Data(bytes: readback.buffer.contents(), count: readback.byteCount)
+            let bitmapInfo = CGBitmapInfo.byteOrder32Little.union(
+                CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedFirst.rawValue)
+            )
+            guard let provider = CGDataProvider(data: pixels as CFData),
+                  let image = CGImage(
+                    width: readback.width,
+                    height: readback.height,
+                    bitsPerComponent: 8,
+                    bitsPerPixel: 32,
+                    bytesPerRow: readback.bytesPerRow,
+                    space: CGColorSpaceCreateDeviceRGB(),
+                    bitmapInfo: bitmapInfo,
+                    provider: provider,
+                    decode: nil,
+                    shouldInterpolate: false,
+                    intent: .defaultIntent
+                  ),
+                  let png = NSBitmapImageRep(cgImage: image).representation(using: .png, properties: [:]) else {
+                Self.report("Could not encode the screenshot as PNG")
+                return
+            }
+            do {
+                try FileManager.default.createDirectory(
+                    at: configuration.screenshotURL.deletingLastPathComponent(),
+                    withIntermediateDirectories: true
+                )
+                try png.write(to: configuration.screenshotURL, options: .atomic)
+                Self.report("Screenshot saved to \(configuration.screenshotURL.path)")
+            } catch {
+                Self.report("Could not save screenshot: \(error.localizedDescription)")
+            }
+        }
+    }
 
     private func updatePlayer(deltaTime: Float, movementInput input: SIMD2<Float>, cameraInput: SIMD2<Float>) {
         orbitCamera(horizontal: cameraInput.x * deltaTime * 2.2, vertical: cameraInput.y * deltaTime * 1.5)
@@ -436,25 +557,26 @@ final class WorldRenderer: NSObject, MTKViewDelegate, @unchecked Sendable {
         shadowPass: Bool
     ) {
         for part in parts {
-            guard let mesh = active.meshes[.primitive(part.primitive)] else { continue }
+            guard let mesh = active.meshes[part.mesh] else { continue }
+            let material = part.material.flatMap { active.surfaceMaterials[$0] } ?? .defaultMaterial
             var instance = part.instance
-            var materialUniforms = SurfaceMaterial.defaultMaterial.uniforms
+            var materialUniforms = material.uniforms
             encoder.setVertexBuffer(mesh.vertices, offset: mesh.vertexOffset, index: 0)
             encoder.setVertexBytes(&instance, length: MemoryLayout<InstanceData>.stride, index: 1)
             encoder.setVertexBytes(&uniforms, length: MemoryLayout<FrameUniforms>.stride, index: 2)
             if shadowPass {
                 encoder.setFragmentBytes(&materialUniforms, length: MemoryLayout<MaterialUniforms>.stride, index: 0)
-                encoder.setFragmentTexture(whiteTexture, index: 0)
-                encoder.setFragmentTexture(whiteTexture, index: 1)
+                encoder.setFragmentTexture(material.baseColor ?? whiteTexture, index: 0)
+                encoder.setFragmentTexture(material.opacity ?? whiteTexture, index: 1)
                 encoder.setFragmentSamplerState(assetSampler, index: 0)
             } else {
                 encoder.setFragmentBytes(&materialUniforms, length: MemoryLayout<MaterialUniforms>.stride, index: 1)
-                encoder.setFragmentTexture(whiteTexture, index: 1)
-                encoder.setFragmentTexture(flatNormalTexture, index: 2)
-                encoder.setFragmentTexture(whiteTexture, index: 3)
-                encoder.setFragmentTexture(whiteTexture, index: 4)
-                encoder.setFragmentTexture(whiteTexture, index: 5)
-                encoder.setFragmentTexture(whiteTexture, index: 6)
+                encoder.setFragmentTexture(material.baseColor ?? whiteTexture, index: 1)
+                encoder.setFragmentTexture(material.normal ?? flatNormalTexture, index: 2)
+                encoder.setFragmentTexture(material.roughness ?? whiteTexture, index: 3)
+                encoder.setFragmentTexture(material.metallic ?? whiteTexture, index: 4)
+                encoder.setFragmentTexture(material.ambientOcclusion ?? whiteTexture, index: 5)
+                encoder.setFragmentTexture(material.opacity ?? whiteTexture, index: 6)
                 encoder.setFragmentSamplerState(assetSampler, index: 1)
             }
             encoder.drawIndexedPrimitives(
@@ -489,6 +611,7 @@ final class WorldRenderer: NSObject, MTKViewDelegate, @unchecked Sendable {
                     objects: objects,
                     meshes: prepared.meshes,
                     assets: prepared.assets,
+                    primitivePlayer: self.configuration.primitivePlayer,
                     device: self.device
                 )
                 self.pendingLock.lock()
@@ -515,7 +638,8 @@ final class WorldRenderer: NSObject, MTKViewDelegate, @unchecked Sendable {
         let assets = try AssetLibrary.load(
             device: device,
             directory: configuration.assetsURL,
-            names: WorldData.assetNames(in: scene)
+            names: WorldData.assetNames(in: scene),
+            player: Self.playerAssetFiles(for: configuration)
         )
         var meshes = primitiveMeshes
         for (id, mesh) in assets.meshes {
@@ -547,6 +671,7 @@ final class WorldRenderer: NSObject, MTKViewDelegate, @unchecked Sendable {
         objects: [RuntimeObject],
         meshes: [MeshID: MeshBuffers],
         assets: AssetLibrary,
+        primitivePlayer: Bool,
         device: MTLDevice
     ) throws -> RuntimeSnapshot {
         var grouped: [DrawKey: [InstanceData]] = [:]
@@ -593,13 +718,38 @@ final class WorldRenderer: NSObject, MTKViewDelegate, @unchecked Sendable {
             }
         }
 
+        let playerModel: ImportedAssetModel?
+        if primitivePlayer {
+            playerModel = nil
+        } else {
+            guard let model = assets.models["Asuna"] else {
+                throw AssetImportError.invalid("player asset Asuna was not loaded")
+            }
+            for part in model.parts {
+                guard meshes[part.mesh] != nil, assets.surfaceMaterials[part.material] != nil else {
+                    throw AssetImportError.invalid("player asset Asuna has an invalid mesh or material reference")
+                }
+            }
+            playerModel = model
+        }
+
         return RuntimeSnapshot(
             scene: scene,
             pipelines: pipelines,
             meshes: meshes,
             batches: batches,
             surfaceMaterials: assets.surfaceMaterials,
-            terrainLayers: assets.terrainLayers
+            terrainLayers: assets.terrainLayers,
+            playerModel: playerModel
+        )
+    }
+
+    private static func playerAssetFiles(for configuration: AppConfiguration) -> PlayerAssetFiles? {
+        guard !configuration.primitivePlayer else { return nil }
+        return PlayerAssetFiles(
+            name: "Asuna",
+            modelURL: configuration.playerModelURL,
+            materialsURL: configuration.playerMaterialsURL
         )
     }
 

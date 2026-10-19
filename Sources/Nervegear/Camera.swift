@@ -6,6 +6,7 @@ import simd
 final class WorldView: MTKView {
     var orbitCamera: ((Float, Float) -> Void)?
     var zoomCamera: ((Float) -> Void)?
+    var captureScreenshot: (() -> Void)?
     private var lastPointer = CGPoint.zero
     private var pressedKeys = Set<String>()
     private var didStartControllerDiscovery = false
@@ -71,6 +72,10 @@ final class WorldView: MTKView {
     }
 
     override func keyDown(with event: NSEvent) {
+        if event.keyCode == 111 {
+            if !event.isARepeat { captureScreenshot?() }
+            return
+        }
         guard let key = movementKey(from: event) else {
             super.keyDown(with: event)
             return

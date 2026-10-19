@@ -114,9 +114,9 @@ Ensure objects remain readable at their intended on-screen size. Don't build det
 
 ### N1.2: One authored region
 
-Build a roughly 96 × 96 metre meadow associated with Horunka Forest.
+Build a 30 × 30 metre meadow associated with Horunka Forest.
 
-Fill the meadow with grass and small wildflowers over softly uneven terrain. Place each OBJ model from `Assets/Objects` once in a spaced collection around the meadow. Include trees, plants, flowers, mushrooms and rocks so the owner can inspect the supplied assets in the world.
+Fill the meadow with grass and broadleaf plants over softly uneven terrain. Place every environment OBJ exported from the supplied `verdant_trail.blend` at least once in a readable collection. The source includes trees, plants, grass, rocks, stones, roots and deadwood. It has no flower or mushroom meshes.
 
 The existing Floor 1 description governs geological materials, vegetation, land use and environmental mood.
 
