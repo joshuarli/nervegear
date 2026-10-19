@@ -4,30 +4,40 @@ import MetalKit
 import ModelIO
 import simd
 
+struct ImportedAssetPart {
+    let mesh: MeshID
+    let material: String
+}
+
 struct ImportedAssetModel {
-    let meshes: [MeshID]
+    let parts: [ImportedAssetPart]
     let minimumY: Float
 }
 
 struct AssetLibrary {
     let meshes: [MeshID: MeshBuffers]
     let models: [String: ImportedAssetModel]
+    let surfaceMaterials: [String: SurfaceMaterial]
+    let terrainLayers: [SurfaceMaterial]
 
     static func load(device: MTLDevice, directory: URL, names: Set<String>) throws -> AssetLibrary {
         try validateAssetDirectory(directory)
+        let catalogURL = directory.appendingPathComponent("materials.json", isDirectory: false)
+        let catalog = try JSONDecoder().decode(AssetMaterialCatalog.self, from: Data(contentsOf: catalogURL))
+        try validate(catalog)
         let textureLoader = MTKTextureLoader(device: device)
         let allocator = MTKMeshBufferAllocator(device: device)
         var meshBuffers: [MeshID: MeshBuffers] = [:]
         var models: [String: ImportedAssetModel] = [:]
-        var textures: [String: MTLTexture] = [:]
+        var usedMaterials = Set(catalog.terrainLayers)
 
         for name in names.sorted() {
-            guard name.range(of: #"^[A-Za-z0-9_]+$"#, options: .regularExpression) != nil else {
+            guard isAssetIdentifier(name) else {
                 throw AssetImportError.invalid("asset name is not a catalog identifier: \(name)")
             }
             let url = directory.appendingPathComponent("\(name).obj", isDirectory: false)
-            guard FileManager.default.fileExists(atPath: url.path) else {
-                throw AssetImportError.invalid("asset file is missing: \(url.lastPathComponent)")
+            guard isRegularFile(url) else {
+                throw AssetImportError.invalid("asset file is missing or invalid: \(url.lastPathComponent)")
             }
 
             let asset = MDLAsset(url: url, vertexDescriptor: vertexDescriptor(), bufferAllocator: allocator)
@@ -36,7 +46,7 @@ struct AssetLibrary {
                 throw AssetImportError.invalid("Model I/O did not produce meshes for \(name)")
             }
 
-            var partIDs: [MeshID] = []
+            var parts: [ImportedAssetPart] = []
             var minimumY = Float.greatestFiniteMagnitude
             for (meshIndex, sourceMesh) in sourceMeshes.enumerated() {
                 minimumY = min(minimumY, sourceMesh.boundingBox.minBounds.y)
@@ -52,30 +62,141 @@ struct AssetLibrary {
                 }
 
                 for (submeshIndex, submesh) in metalMesh.submeshes.enumerated() {
-                    let id = MeshID.asset(name: name, part: partIDs.count)
-                    let texture = try loadTexture(
-                        from: sourceSubmeshes[submeshIndex].material,
-                        using: textureLoader,
-                        cache: &textures
-                    )
+                    guard let materialName = sourceSubmeshes[submeshIndex].material?.name,
+                          catalog.materials[materialName] != nil else {
+                        throw AssetImportError.invalid("asset \(name) has a submesh without a material in materials.json")
+                    }
+                    let id = MeshID.asset(name: name, part: parts.count)
                     meshBuffers[id] = MeshBuffers(
                         vertices: vertexBuffer,
                         indices: submesh.indexBuffer.buffer,
                         indexCount: submesh.indexCount,
                         indexType: submesh.indexType,
                         vertexOffset: 0,
-                        indexOffset: submesh.indexBuffer.offset,
-                        texture: texture
+                        indexOffset: submesh.indexBuffer.offset
                     )
-                    partIDs.append(id)
+                    parts.append(ImportedAssetPart(mesh: id, material: materialName))
+                    usedMaterials.insert(materialName)
                 }
             }
-            guard minimumY.isFinite, !partIDs.isEmpty else {
+            guard minimumY.isFinite, !parts.isEmpty else {
                 throw AssetImportError.invalid("asset has no drawable geometry: \(name)")
             }
-            models[name] = ImportedAssetModel(meshes: partIDs, minimumY: minimumY)
+            models[name] = ImportedAssetModel(parts: parts, minimumY: minimumY)
         }
-        return AssetLibrary(meshes: meshBuffers, models: models)
+
+        var surfaceMaterials: [String: SurfaceMaterial] = [:]
+        var textureCache: [String: MTLTexture] = [:]
+        for name in usedMaterials.sorted() {
+            guard let definition = catalog.materials[name] else {
+                throw AssetImportError.invalid("material is missing from materials.json: \(name)")
+            }
+            surfaceMaterials[name] = try loadSurfaceMaterial(
+                definition,
+                using: textureLoader,
+                directory: directory,
+                cache: &textureCache
+            )
+        }
+        let terrainLayers = catalog.terrainLayers.compactMap { surfaceMaterials[$0] }
+        guard terrainLayers.count == 3 else {
+            throw AssetImportError.invalid("materials.json must define three loadable terrain layers")
+        }
+        return AssetLibrary(
+            meshes: meshBuffers,
+            models: models,
+            surfaceMaterials: surfaceMaterials,
+            terrainLayers: terrainLayers
+        )
+    }
+
+    private static func validate(_ catalog: AssetMaterialCatalog) throws {
+        guard catalog.version == 1 else {
+            throw AssetImportError.invalid("asset material catalog version \(catalog.version) is unsupported")
+        }
+        guard catalog.terrainLayers.count == 3,
+              Set(catalog.terrainLayers).count == catalog.terrainLayers.count,
+              catalog.terrainLayers.allSatisfy({ catalog.materials[$0] != nil }) else {
+            throw AssetImportError.invalid("asset material catalog must define three unique terrain layers")
+        }
+        for (name, material) in catalog.materials {
+            guard isAssetIdentifier(name),
+                  material.baseColorFactor.count == 4,
+                  material.baseColorFactor.allSatisfy({ $0.isFinite && (0...1).contains($0) }),
+                  material.roughnessFactor.isFinite && (0...1).contains(material.roughnessFactor),
+                  material.metallicFactor.isFinite && (0...1).contains(material.metallicFactor),
+                  material.alphaCutoff.isFinite && (0...1).contains(material.alphaCutoff),
+                  material.uvScale.map({ $0.isFinite && (0.001...8).contains($0) }) ?? true else {
+                throw AssetImportError.invalid("material definition is invalid: \(name)")
+            }
+        }
+    }
+
+    private static func loadSurfaceMaterial(
+        _ definition: SurfaceDefinition,
+        using loader: MTKTextureLoader,
+        directory: URL,
+        cache: inout [String: MTLTexture]
+    ) throws -> SurfaceMaterial {
+        func load(_ path: String?, srgb: Bool) throws -> MTLTexture? {
+            guard let path else { return nil }
+            let url = try textureURL(path, directory: directory)
+            let cacheKey = "\(url.path)|\(srgb)"
+            if let texture = cache[cacheKey] { return texture }
+            let texture = try loader.newTexture(
+                URL: url,
+                options: [
+                    .SRGB: NSNumber(value: srgb),
+                    .generateMipmaps: NSNumber(value: true)
+                ]
+            )
+            cache[cacheKey] = texture
+            return texture
+        }
+
+        return SurfaceMaterial(
+            baseColor: try load(definition.baseColor, srgb: true),
+            normal: try load(definition.normal, srgb: false),
+            roughness: try load(definition.roughness, srgb: false),
+            metallic: try load(definition.metallic, srgb: false),
+            ambientOcclusion: try load(definition.ambientOcclusion, srgb: false),
+            opacity: try load(definition.opacity, srgb: false),
+            baseColorFactor: SIMD4(
+                definition.baseColorFactor[0],
+                definition.baseColorFactor[1],
+                definition.baseColorFactor[2],
+                definition.baseColorFactor[3]
+            ),
+            roughnessFactor: definition.roughnessFactor,
+            metallicFactor: definition.metallicFactor,
+            alphaCutoff: definition.alphaCutoff,
+            uvScale: definition.uvScale ?? 1,
+            alphaMasked: definition.opacity != nil,
+            doubleSided: definition.doubleSided
+        )
+    }
+
+    private static func textureURL(_ path: String, directory: URL) throws -> URL {
+        guard !path.hasPrefix("/"), !path.contains("\\"),
+              !path.split(separator: "/", omittingEmptySubsequences: false).contains(where: { $0.isEmpty || $0 == "." || $0 == ".." }) else {
+            throw AssetImportError.invalid("texture path must be relative to the asset catalog: \(path)")
+        }
+        let url = path.split(separator: "/").reduce(directory) { result, component in
+            result.appendingPathComponent(String(component), isDirectory: false)
+        }
+        guard isRegularFile(url) else {
+            throw AssetImportError.invalid("texture file is missing or invalid: \(path)")
+        }
+        return url
+    }
+
+    private static func isRegularFile(_ url: URL) -> Bool {
+        guard let values = try? url.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey]) else { return false }
+        return values.isRegularFile == true && values.isSymbolicLink != true
+    }
+
+    private static func isAssetIdentifier(_ value: String) -> Bool {
+        value.range(of: #"^[A-Za-z0-9_]+$"#, options: .regularExpression) != nil
     }
 
     private static func validateAssetDirectory(_ directory: URL) throws {
@@ -141,19 +262,6 @@ struct AssetLibrary {
             let texCoord = texCoords.dataStart.advanced(by: index * texCoords.stride).loadUnaligned(as: SIMD2<Float>.self)
             return MeshVertex(position: position, normal: normal, color: SIMD4(repeating: 1), texCoord: texCoord)
         }
-    }
-
-    private static func loadTexture(
-        from material: MDLMaterial?,
-        using loader: MTKTextureLoader,
-        cache: inout [String: MTLTexture]
-    ) throws -> MTLTexture? {
-        guard let modelTexture = material?.property(with: .baseColor)?.textureSamplerValue?.texture else { return nil }
-        let cacheKey = (modelTexture as? MDLURLTexture)?.url.standardizedFileURL.absoluteString ?? modelTexture.name
-        if let cached = cache[cacheKey] { return cached }
-        let texture = try loader.newTexture(texture: modelTexture, options: nil)
-        cache[cacheKey] = texture
-        return texture
     }
 }
 

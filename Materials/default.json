@@ -1,11 +1,6 @@
 {
   "version": 1,
   "materials": [
-    { "id": "ground", "color": [0.72, 0.82, 0.56, 1.0] },
-    { "id": "grass", "color": [0.31, 0.56, 0.24, 1.0] },
-    { "id": "grass-light", "color": [0.52, 0.72, 0.38, 1.0] },
-    { "id": "flower-white", "color": [0.96, 0.94, 0.80, 1.0] },
-    { "id": "flower-gold", "color": [0.98, 0.73, 0.24, 1.0] },
-    { "id": "flower-pink", "color": [0.88, 0.38, 0.52, 1.0] }
+    { "id": "ground", "color": [1.0, 1.0, 1.0, 1.0] }
   ]
 }

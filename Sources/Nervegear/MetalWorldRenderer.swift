@@ -26,6 +26,8 @@ struct RuntimeSnapshot: @unchecked Sendable {
     let pipelines: PipelineSet
     let meshes: [MeshID: MeshBuffers]
     let batches: [DrawBatch]
+    let surfaceMaterials: [String: SurfaceMaterial]
+    let terrainLayers: [SurfaceMaterial]
 }
 
 struct PreparedReload: @unchecked Sendable {
@@ -59,6 +61,7 @@ final class WorldRenderer: NSObject, MTKViewDelegate, @unchecked Sendable {
     private let commandQueue: MTLCommandQueue
     private let shadowTexture: MTLTexture
     private let whiteTexture: MTLTexture
+    private let flatNormalTexture: MTLTexture
     private let depthState: MTLDepthStencilState
     private let shadowSampler: MTLSamplerState
     private let assetSampler: MTLSamplerState
@@ -105,7 +108,7 @@ final class WorldRenderer: NSObject, MTKViewDelegate, @unchecked Sendable {
         let assets = try AssetLibrary.load(
             device: device,
             directory: configuration.assetsURL,
-            names: Set(scene.objects.map(\.asset))
+            names: WorldData.assetNames(in: scene)
         )
         var meshes = primitiveMeshes
         for (id, mesh) in assets.meshes {
@@ -149,6 +152,28 @@ final class WorldRenderer: NSObject, MTKViewDelegate, @unchecked Sendable {
         }
         self.whiteTexture = whiteTexture
 
+        let normalDescriptor = MTLTextureDescriptor.texture2DDescriptor(
+            pixelFormat: .rgba8Unorm,
+            width: 1,
+            height: 1,
+            mipmapped: false
+        )
+        normalDescriptor.usage = .shaderRead
+        normalDescriptor.storageMode = .shared
+        guard let flatNormalTexture = device.makeTexture(descriptor: normalDescriptor) else {
+            throw RendererError.gpu("Metal could not allocate the default normal texture")
+        }
+        let normalPixel: [UInt8] = [128, 128, 255, 255]
+        normalPixel.withUnsafeBytes { bytes in
+            flatNormalTexture.replace(
+                region: MTLRegionMake2D(0, 0, 1, 1),
+                mipmapLevel: 0,
+                withBytes: bytes.baseAddress!,
+                bytesPerRow: 4
+            )
+        }
+        self.flatNormalTexture = flatNormalTexture
+
         let depthDescriptor = MTLDepthStencilDescriptor()
         depthDescriptor.depthCompareFunction = .lessEqual
         depthDescriptor.isDepthWriteEnabled = true
@@ -185,6 +210,7 @@ final class WorldRenderer: NSObject, MTKViewDelegate, @unchecked Sendable {
             pipelines: pipelines,
             objects: objects,
             meshes: meshes,
+            assets: assets,
             device: device
         )
         playerState = session?.player ?? PlayerState(position: scene.playerStart, yaw: 0)
@@ -199,7 +225,12 @@ final class WorldRenderer: NSObject, MTKViewDelegate, @unchecked Sendable {
         view.isPaused = false
         view.enableSetNeedsDisplay = false
         fileWatcher = try FileWatcher(
-            urls: [configuration.shaderURL, configuration.sceneURL, configuration.materialsURL],
+            urls: [
+                configuration.shaderURL,
+                configuration.sceneURL,
+                configuration.materialsURL,
+                configuration.assetsURL.appendingPathComponent("materials.json", isDirectory: false)
+            ],
             onChange: { [weak self] in self?.reloadFiles() }
         )
         fileWatcher?.start()
@@ -250,6 +281,12 @@ final class WorldRenderer: NSObject, MTKViewDelegate, @unchecked Sendable {
 
         let aspect = Float(max(view.drawableSize.width, 1) / max(view.drawableSize.height, 1))
         let lightDirection = simd_normalize(SIMD3<Float>(-0.48, 0.82, -0.31))
+        let cameraPosition = CameraMath.eyePosition(
+            target: followTarget,
+            yaw: cameraYaw,
+            pitch: cameraPitch,
+            distance: cameraDistance
+        )
         var uniforms = FrameUniforms(
             viewProjection: CameraMath.viewProjection(
                 target: followTarget,
@@ -260,7 +297,8 @@ final class WorldRenderer: NSObject, MTKViewDelegate, @unchecked Sendable {
             ),
             lightViewProjection: CameraMath.lightViewProjection(extent: active.scene.world.extent * 0.8),
             lightDirection: SIMD4(lightDirection.x, lightDirection.y, lightDirection.z, 0),
-            shadowTexelSize: SIMD4(1 / Float(shadowTexture.width), 1 / Float(shadowTexture.height), 0, 0)
+            cameraPosition: SIMD4(cameraPosition.x, cameraPosition.y, cameraPosition.z, 1),
+            shadowTexelSize: SIMD4(1 / Float(shadowTexture.width), 1 / Float(shadowTexture.height), 2.2, 0)
         )
         let playerParts = PlayerAvatar.parts(player: playerState, gaitPhase: walkPhase, isWalking: isWalking)
 
@@ -272,12 +310,17 @@ final class WorldRenderer: NSObject, MTKViewDelegate, @unchecked Sendable {
         if let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: shadowPass) {
             encoder.setRenderPipelineState(active.pipelines.shadow)
             encoder.setDepthStencilState(depthState)
-            for batch in active.batches where batch.key.mesh.castsShadow {
+            encoder.setCullMode(.none)
+            for batch in active.batches {
                 guard let mesh = active.meshes[batch.key.mesh] else { continue }
+                let material = active.surfaceMaterials[batch.key.material] ?? .defaultMaterial
+                var materialUniforms = material.uniforms
                 encoder.setVertexBuffer(mesh.vertices, offset: mesh.vertexOffset, index: 0)
                 encoder.setVertexBuffer(batch.instances, offset: 0, index: 1)
                 encoder.setVertexBytes(&uniforms, length: MemoryLayout<FrameUniforms>.stride, index: 2)
-                encoder.setFragmentTexture(mesh.texture ?? whiteTexture, index: 0)
+                encoder.setFragmentBytes(&materialUniforms, length: MemoryLayout<MaterialUniforms>.stride, index: 0)
+                encoder.setFragmentTexture(material.baseColor ?? whiteTexture, index: 0)
+                encoder.setFragmentTexture(material.opacity ?? whiteTexture, index: 1)
                 encoder.setFragmentSamplerState(assetSampler, index: 0)
                 encoder.drawIndexedPrimitives(
                     type: .triangle,
@@ -288,7 +331,7 @@ final class WorldRenderer: NSObject, MTKViewDelegate, @unchecked Sendable {
                     instanceCount: batch.count
                 )
             }
-            drawPlayer(playerParts, with: encoder, uniforms: &uniforms, textureIndex: 0)
+            drawPlayer(playerParts, with: encoder, uniforms: &uniforms, shadowPass: true)
             encoder.endEncoding()
         }
 
@@ -296,15 +339,33 @@ final class WorldRenderer: NSObject, MTKViewDelegate, @unchecked Sendable {
         if let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: pass) {
             encoder.setRenderPipelineState(active.pipelines.world)
             encoder.setDepthStencilState(depthState)
+            encoder.setCullMode(.none)
             encoder.setFragmentTexture(shadowTexture, index: 0)
             encoder.setFragmentSamplerState(shadowSampler, index: 0)
             encoder.setFragmentBytes(&uniforms, length: MemoryLayout<FrameUniforms>.stride, index: 0)
+            var terrainUniforms = TerrainMaterialUniforms(layers: active.terrainLayers)
+            encoder.setFragmentBytes(&terrainUniforms, length: MemoryLayout<TerrainMaterialUniforms>.stride, index: 2)
+            for (layerIndex, material) in active.terrainLayers.enumerated() {
+                let textureIndex = 7 + layerIndex * 3
+                encoder.setFragmentTexture(material.baseColor ?? whiteTexture, index: textureIndex)
+                encoder.setFragmentTexture(material.normal ?? flatNormalTexture, index: textureIndex + 1)
+                encoder.setFragmentTexture(material.roughness ?? whiteTexture, index: textureIndex + 2)
+            }
             for batch in active.batches {
                 guard let mesh = active.meshes[batch.key.mesh] else { continue }
+                let material = active.surfaceMaterials[batch.key.material] ?? .defaultMaterial
+                let isTerrain = batch.key.mesh == .primitive(.terrain)
+                var materialUniforms = material.uniforms(forTerrain: isTerrain)
                 encoder.setVertexBuffer(mesh.vertices, offset: mesh.vertexOffset, index: 0)
                 encoder.setVertexBuffer(batch.instances, offset: 0, index: 1)
                 encoder.setVertexBytes(&uniforms, length: MemoryLayout<FrameUniforms>.stride, index: 2)
-                encoder.setFragmentTexture(mesh.texture ?? whiteTexture, index: 1)
+                encoder.setFragmentBytes(&materialUniforms, length: MemoryLayout<MaterialUniforms>.stride, index: 1)
+                encoder.setFragmentTexture(material.baseColor ?? whiteTexture, index: 1)
+                encoder.setFragmentTexture(material.normal ?? flatNormalTexture, index: 2)
+                encoder.setFragmentTexture(material.roughness ?? whiteTexture, index: 3)
+                encoder.setFragmentTexture(material.metallic ?? whiteTexture, index: 4)
+                encoder.setFragmentTexture(material.ambientOcclusion ?? whiteTexture, index: 5)
+                encoder.setFragmentTexture(material.opacity ?? whiteTexture, index: 6)
                 encoder.setFragmentSamplerState(assetSampler, index: 1)
                 encoder.drawIndexedPrimitives(
                     type: .triangle,
@@ -315,7 +376,7 @@ final class WorldRenderer: NSObject, MTKViewDelegate, @unchecked Sendable {
                     instanceCount: batch.count
                 )
             }
-            drawPlayer(playerParts, with: encoder, uniforms: &uniforms, textureIndex: 1)
+            drawPlayer(playerParts, with: encoder, uniforms: &uniforms, shadowPass: false)
             encoder.endEncoding()
         }
 
@@ -372,16 +433,30 @@ final class WorldRenderer: NSObject, MTKViewDelegate, @unchecked Sendable {
         _ parts: [PlayerDrawPart],
         with encoder: MTLRenderCommandEncoder,
         uniforms: inout FrameUniforms,
-        textureIndex: Int
+        shadowPass: Bool
     ) {
         for part in parts {
             guard let mesh = active.meshes[.primitive(part.primitive)] else { continue }
             var instance = part.instance
+            var materialUniforms = SurfaceMaterial.defaultMaterial.uniforms
             encoder.setVertexBuffer(mesh.vertices, offset: mesh.vertexOffset, index: 0)
             encoder.setVertexBytes(&instance, length: MemoryLayout<InstanceData>.stride, index: 1)
             encoder.setVertexBytes(&uniforms, length: MemoryLayout<FrameUniforms>.stride, index: 2)
-            encoder.setFragmentTexture(whiteTexture, index: textureIndex)
-            encoder.setFragmentSamplerState(assetSampler, index: textureIndex)
+            if shadowPass {
+                encoder.setFragmentBytes(&materialUniforms, length: MemoryLayout<MaterialUniforms>.stride, index: 0)
+                encoder.setFragmentTexture(whiteTexture, index: 0)
+                encoder.setFragmentTexture(whiteTexture, index: 1)
+                encoder.setFragmentSamplerState(assetSampler, index: 0)
+            } else {
+                encoder.setFragmentBytes(&materialUniforms, length: MemoryLayout<MaterialUniforms>.stride, index: 1)
+                encoder.setFragmentTexture(whiteTexture, index: 1)
+                encoder.setFragmentTexture(flatNormalTexture, index: 2)
+                encoder.setFragmentTexture(whiteTexture, index: 3)
+                encoder.setFragmentTexture(whiteTexture, index: 4)
+                encoder.setFragmentTexture(whiteTexture, index: 5)
+                encoder.setFragmentTexture(whiteTexture, index: 6)
+                encoder.setFragmentSamplerState(assetSampler, index: 1)
+            }
             encoder.drawIndexedPrimitives(
                 type: .triangle,
                 indexCount: mesh.indexCount,
@@ -413,6 +488,7 @@ final class WorldRenderer: NSObject, MTKViewDelegate, @unchecked Sendable {
                     pipelines: prepared.pipelines,
                     objects: objects,
                     meshes: prepared.meshes,
+                    assets: prepared.assets,
                     device: self.device
                 )
                 self.pendingLock.lock()
@@ -439,7 +515,7 @@ final class WorldRenderer: NSObject, MTKViewDelegate, @unchecked Sendable {
         let assets = try AssetLibrary.load(
             device: device,
             directory: configuration.assetsURL,
-            names: Set(scene.objects.map(\.asset))
+            names: WorldData.assetNames(in: scene)
         )
         var meshes = primitiveMeshes
         for (id, mesh) in assets.meshes {
@@ -470,6 +546,7 @@ final class WorldRenderer: NSObject, MTKViewDelegate, @unchecked Sendable {
         pipelines: PipelineSet,
         objects: [RuntimeObject],
         meshes: [MeshID: MeshBuffers],
+        assets: AssetLibrary,
         device: MTLDevice
     ) throws -> RuntimeSnapshot {
         var grouped: [DrawKey: [InstanceData]] = [:]
@@ -510,7 +587,20 @@ final class WorldRenderer: NSObject, MTKViewDelegate, @unchecked Sendable {
             batches.append(DrawBatch(key: key, instances: buffer, count: instances.count))
         }
 
-        return RuntimeSnapshot(scene: scene, pipelines: pipelines, meshes: meshes, batches: batches)
+        for batch in batches where batch.key.mesh != .primitive(.terrain) {
+            guard assets.surfaceMaterials[batch.key.material] != nil else {
+                throw AssetImportError.invalid("draw batch references missing surface material \(batch.key.material)")
+            }
+        }
+
+        return RuntimeSnapshot(
+            scene: scene,
+            pipelines: pipelines,
+            meshes: meshes,
+            batches: batches,
+            surfaceMaterials: assets.surfaceMaterials,
+            terrainLayers: assets.terrainLayers
+        )
     }
 
     private static func makePipelines(

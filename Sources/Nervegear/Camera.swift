@@ -103,9 +103,13 @@ final class WorldView: MTKView {
 }
 
 enum CameraMath {
-    static func viewProjection(target: SIMD3<Float>, yaw: Float, pitch: Float, distance: Float, aspect: Float) -> simd_float4x4 {
+    static func eyePosition(target: SIMD3<Float>, yaw: Float, pitch: Float, distance: Float) -> SIMD3<Float> {
         let horizontal = distance * cos(pitch)
-        let eye = target + SIMD3(-sin(yaw) * horizontal, sin(pitch) * distance, cos(yaw) * horizontal)
+        return target + SIMD3(-sin(yaw) * horizontal, sin(pitch) * distance, cos(yaw) * horizontal)
+    }
+
+    static func viewProjection(target: SIMD3<Float>, yaw: Float, pitch: Float, distance: Float, aspect: Float) -> simd_float4x4 {
+        let eye = eyePosition(target: target, yaw: yaw, pitch: pitch, distance: distance)
         let view = lookAt(eye: eye, target: target, up: SIMD3(0, 1, 0))
         let projection = perspective(fieldOfView: 58 * .pi / 180, aspect: aspect, near: 0.05, far: 180)
         return projection * view

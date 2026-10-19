@@ -48,9 +48,9 @@ struct Transform {
         let cosine = cos(rotationY)
         let sine = sin(rotationY)
         let rotation = simd_float4x4(columns: (
-            SIMD4(cosine, 0, -sine, 0),
+            SIMD4(cosine, 0, sine, 0),
             SIMD4(0, 1, 0, 0),
-            SIMD4(sine, 0, cosine, 0),
+            SIMD4(-sine, 0, cosine, 0),
             SIMD4(0, 0, 0, 1)
         ))
         return translation * rotation * scaling
@@ -62,20 +62,11 @@ enum Primitive: String, Codable, CaseIterable {
     case sphere
     case cylinder
     case terrain
-    case grass
-    case flower
 }
 
 enum MeshID: Hashable {
     case primitive(Primitive)
     case asset(name: String, part: Int)
-
-    var castsShadow: Bool {
-        switch self {
-        case .primitive(.grass), .primitive(.flower): false
-        default: true
-        }
-    }
 }
 
 struct WorldSettings: Codable {
@@ -83,16 +74,20 @@ struct WorldSettings: Codable {
     var seed: UInt64
 }
 
-struct MeadowSettings: Codable {
-    var grassCount: Int
-    var flowerCount: Int
-}
-
 struct AssetPlacement: Codable {
     var asset: String
-    var position: Vector3
+    var x: Float
+    var z: Float
     var scale: Float
     var rotation: Float
+}
+
+struct VegetationScatter: Codable {
+    var asset: String
+    var count: Int
+    var minimumScale: Float
+    var maximumScale: Float
+    var pathClearance: Float
 }
 
 struct SceneDocument: Codable {
@@ -101,9 +96,9 @@ struct SceneDocument: Codable {
     var name: String
     var aincrad2Location: String
     var world: WorldSettings
-    var meadow: MeadowSettings
     var playerStart: Vector3
     var objects: [AssetPlacement]
+    var vegetation: [VegetationScatter]
 }
 
 struct MaterialDefinition: Codable {
@@ -174,14 +169,8 @@ enum WorldData {
         guard !scene.id.isEmpty, !scene.name.isEmpty, !scene.aincrad2Location.isEmpty else {
             throw WorldDataError.invalid("scene identity, name, and Aincrad2 location must not be empty")
         }
-        guard scene.world.extent.isFinite && (32...256).contains(scene.world.extent) else {
-            throw WorldDataError.invalid("scene world.extent must be between 32 and 256")
-        }
-        guard (0...24_000).contains(scene.meadow.grassCount) else {
-            throw WorldDataError.invalid("scene meadow.grassCount must be between 0 and 24000")
-        }
-        guard (0...2_000).contains(scene.meadow.flowerCount) else {
-            throw WorldDataError.invalid("scene meadow.flowerCount must be between 0 and 2000")
+        guard scene.world.extent.isFinite && (8...256).contains(scene.world.extent) else {
+            throw WorldDataError.invalid("scene world.extent must be between 8 and 256")
         }
         let position = scene.playerStart
         guard [position.x, position.y, position.z].allSatisfy(\.isFinite),
@@ -191,15 +180,31 @@ enum WorldData {
         }
         var objectIDs = Set<String>()
         for object in scene.objects {
-            let position = object.position
-            guard object.asset.range(of: #"^[A-Za-z0-9_]+$"#, options: .regularExpression) != nil,
-                  [position.x, position.y, position.z, object.scale, object.rotation].allSatisfy(\.isFinite),
+            guard isAssetIdentifier(object.asset),
+                  [object.x, object.z, object.scale, object.rotation].allSatisfy(\.isFinite),
                   (0.05...12).contains(object.scale),
-                  abs(position.x) < scene.world.extent * 0.5 - 1,
-                  abs(position.z) < scene.world.extent * 0.5 - 1,
+                  abs(object.x) < scene.world.extent * 0.5 - 1,
+                  abs(object.z) < scene.world.extent * 0.5 - 1,
                   objectIDs.insert(object.asset).inserted else {
                 throw WorldDataError.invalid("scene objects must have unique asset names and finite transforms inside the world bounds")
             }
+        }
+        var scatterAssets = Set<String>()
+        var totalInstances = 0
+        for scatter in scene.vegetation {
+            guard isAssetIdentifier(scatter.asset),
+                  (0...5000).contains(scatter.count),
+                  scatter.minimumScale.isFinite && scatter.maximumScale.isFinite,
+                  (0.1...8).contains(scatter.minimumScale),
+                  (scatter.minimumScale...8).contains(scatter.maximumScale),
+                  scatter.pathClearance.isFinite && (0...scene.world.extent * 0.25).contains(scatter.pathClearance),
+                  scatterAssets.insert(scatter.asset).inserted else {
+                throw WorldDataError.invalid("scene vegetation entries need unique asset names and finite, bounded scatter settings")
+            }
+            totalInstances += scatter.count
+        }
+        guard totalInstances <= 5000 else {
+            throw WorldDataError.invalid("scene vegetation may contain at most 5000 instances")
         }
     }
 
@@ -215,6 +220,13 @@ enum WorldData {
                 throw WorldDataError.invalid("material \(material.id) color must contain four finite values from 0 to 1")
             }
         }
+        guard identifiers.contains("ground") else {
+            throw WorldDataError.invalid("materials must define ground")
+        }
+    }
+
+    static func assetNames(in scene: SceneDocument) -> Set<String> {
+        Set(scene.objects.map(\.asset) + scene.vegetation.map(\.asset))
     }
 
     static func makeObjects(
@@ -222,28 +234,67 @@ enum WorldData {
         materials: MaterialsDocument,
         assets: AssetLibrary
     ) throws -> [RuntimeObject] {
-        let materialIDs = Set(materials.materials.map(\.id))
-        let required = ["ground", "grass", "grass-light", "flower-white", "flower-gold", "flower-pink"]
-        guard let missing = required.first(where: { !materialIDs.contains($0) }) else {
-            var objects = try makeMeadow(scene: scene)
-            for placement in scene.objects {
-                guard let model = assets.models[placement.asset] else {
-                    throw WorldDataError.invalid("scene object references missing asset \(placement.asset)")
-                }
-                var position = placement.position
-                position.y = terrainHeight(x: position.x, z: position.z, world: scene.world) - model.minimumY * placement.scale
-                let transform = Transform(
-                    position: position,
-                    scale: Vector3(x: placement.scale, y: placement.scale, z: placement.scale),
-                    rotationY: placement.rotation
-                )
-                for mesh in model.meshes {
-                    objects.append(RuntimeObject(mesh: mesh, material: "asset", transform: transform))
-                }
-            }
-            return objects
+        guard materials.materials.contains(where: { $0.id == "ground" }) else {
+            throw WorldDataError.invalid("materials must define ground")
         }
-        throw WorldDataError.invalid("materials must define \(missing)")
+        var objects = [RuntimeObject](arrayLiteral: RuntimeObject(
+            mesh: .primitive(.terrain),
+            material: "ground",
+            transform: Transform(position: Vector3(x: 0, y: 0, z: 0), scale: Vector3(x: 1, y: 1, z: 1))
+        ))
+        var random = SplitMix64(seed: scene.world.seed)
+        for placement in scene.objects {
+            guard let model = assets.models[placement.asset] else {
+                throw WorldDataError.invalid("scene object references missing asset \(placement.asset)")
+            }
+            let transform = assetTransform(
+                x: placement.x,
+                z: placement.z,
+                scale: placement.scale,
+                rotation: placement.rotation,
+                model: model,
+                world: scene.world
+            )
+            append(model: model, transform: transform, to: &objects)
+        }
+        for scatter in scene.vegetation {
+            guard let model = assets.models[scatter.asset] else {
+                throw WorldDataError.invalid("scene vegetation references missing asset \(scatter.asset)")
+            }
+            var placed = 0
+            var attempts = 0
+            while placed < scatter.count && attempts < scatter.count * 80 + 1 {
+                attempts += 1
+                let limit = scene.world.extent * 0.5 - 1
+                let x = random.range(-limit, limit)
+                let z = random.range(-limit, limit)
+                let scale = random.range(scatter.minimumScale, scatter.maximumScale)
+                guard abs(x) >= scatter.pathClearance,
+                      simd_distance(SIMD2(x, z), SIMD2(scene.playerStart.x, scene.playerStart.z)) >= 1.5,
+                      !scene.objects.contains(where: { simd_distance(SIMD2(x, z), SIMD2($0.x, $0.z)) < 1.6 * $0.scale + 0.8 }),
+                      scatter.asset == "Wild_Grass" || !objects.contains(where: {
+                          guard case .asset(let name, _) = $0.mesh, name == scatter.asset else { return false }
+                          let offset = SIMD2(x - $0.transform.position.x, z - $0.transform.position.z)
+                          return simd_length(offset) < 0.8 * scale
+                      }) else {
+                    continue
+                }
+                let transform = assetTransform(
+                    x: x,
+                    z: z,
+                    scale: scale,
+                    rotation: random.range(0, 2 * .pi),
+                    model: model,
+                    world: scene.world
+                )
+                append(model: model, transform: transform, to: &objects)
+                placed += 1
+            }
+            guard placed == scatter.count else {
+                throw WorldDataError.invalid("could not place all \(scatter.asset) instances")
+            }
+        }
+        return objects
     }
 
     static func terrainHeight(x: Float, z: Float, world: WorldSettings) -> Float {
@@ -252,58 +303,29 @@ enum WorldData {
             + 0.10 * sin(x * 0.21 - z * 0.16)
     }
 
-    private static func makeMeadow(scene: SceneDocument) throws -> [RuntimeObject] {
-        var objects = [RuntimeObject(
-            mesh: .primitive(.terrain),
-            material: "ground",
-            transform: Transform(position: Vector3(x: 0, y: 0, z: 0), scale: Vector3(x: 1, y: 1, z: 1))
-        )]
-        var random = SplitMix64(seed: scene.world.seed)
-        let halfExtent = scene.world.extent * 0.47
-        var grassPlaced = 0
-        var attempts = 0
-        while grassPlaced < scene.meadow.grassCount && attempts < scene.meadow.grassCount * 8 + 1 {
-            attempts += 1
-            let x = random.range(-halfExtent, halfExtent)
-            let z = random.range(-halfExtent, halfExtent)
-            if simd_distance(SIMD2(x, z), SIMD2(scene.playerStart.x, scene.playerStart.z)) < 1.4 { continue }
-            grassPlaced += 1
-            let lightGrass = random.next().isMultiple(of: 5)
-            objects.append(RuntimeObject(
-                mesh: .primitive(.grass),
-                material: lightGrass ? "grass-light" : "grass",
-                transform: Transform(
-                    position: Vector3(x: x, y: terrainHeight(x: x, z: z, world: scene.world), z: z),
-                    scale: Vector3(x: random.range(0.7, 1.35), y: random.range(0.55, 1.15), z: random.range(0.7, 1.35))
-                )
-            ))
-        }
-        guard grassPlaced == scene.meadow.grassCount else {
-            throw WorldDataError.invalid("could not place all meadow grass instances")
-        }
+    private static func assetTransform(
+        x: Float,
+        z: Float,
+        scale: Float,
+        rotation: Float,
+        model: ImportedAssetModel,
+        world: WorldSettings
+    ) -> Transform {
+        Transform(
+            position: Vector3(x: x, y: terrainHeight(x: x, z: z, world: world) - model.minimumY * scale, z: z),
+            scale: Vector3(x: scale, y: scale, z: scale),
+            rotationY: rotation
+        )
+    }
 
-        let flowerMaterials = ["flower-white", "flower-gold", "flower-pink"]
-        var flowersPlaced = 0
-        attempts = 0
-        while flowersPlaced < scene.meadow.flowerCount && attempts < scene.meadow.flowerCount * 8 + 1 {
-            attempts += 1
-            let x = random.range(-halfExtent, halfExtent)
-            let z = random.range(-halfExtent, halfExtent)
-            if simd_distance(SIMD2(x, z), SIMD2(scene.playerStart.x, scene.playerStart.z)) < 1.8 { continue }
-            flowersPlaced += 1
-            objects.append(RuntimeObject(
-                mesh: .primitive(.flower),
-                material: flowerMaterials[Int(random.next() % UInt64(flowerMaterials.count))],
-                transform: Transform(
-                    position: Vector3(x: x, y: terrainHeight(x: x, z: z, world: scene.world), z: z),
-                    scale: Vector3(x: random.range(0.34, 0.52), y: random.range(0.5, 0.82), z: random.range(0.34, 0.52))
-                )
-            ))
+    private static func append(model: ImportedAssetModel, transform: Transform, to objects: inout [RuntimeObject]) {
+        for part in model.parts {
+            objects.append(RuntimeObject(mesh: part.mesh, material: part.material, transform: transform))
         }
-        guard flowersPlaced == scene.meadow.flowerCount else {
-            throw WorldDataError.invalid("could not place all meadow flowers")
-        }
-        return objects
+    }
+
+    private static func isAssetIdentifier(_ value: String) -> Bool {
+        value.range(of: #"^[A-Za-z0-9_]+$"#, options: .regularExpression) != nil
     }
 }
 
