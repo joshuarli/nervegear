@@ -491,10 +491,17 @@ func parseArguments() throws -> (Profile, URL) {
 
     let workingDirectory = URL(fileURLWithPath: FileManager.default.currentDirectoryPath, isDirectory: true)
     let executable = URL(fileURLWithPath: CommandLine.arguments[0], relativeTo: workingDirectory).standardizedFileURL
-    let root = executable
-        .deletingLastPathComponent()
-        .deletingLastPathComponent()
-        .deletingLastPathComponent()
+    let root: URL
+    if executable.lastPathComponent == "dev.swift" {
+        root = executable
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+    } else {
+        root = executable
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+    }
     guard root.path != "/" else { throw DriverError.invalidExecutablePath }
     return (profile, root)
 }

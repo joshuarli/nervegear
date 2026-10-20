@@ -6,13 +6,11 @@ TMP := $(WORK)/tmp
 
 dev:
 	mkdir -p $(TMP) $(WORK)/dev
-	TMPDIR=$(TMP) swiftc -swift-version 6 tools/dev.swift -o $(WORK)/dev/driver
-	TMPDIR=$(TMP) $(WORK)/dev/driver --profile dev
+	TMPDIR=$(TMP) swift -swift-version 6 tools/dev.swift --profile dev
 
 dev-fast:
 	mkdir -p $(TMP) $(WORK)/dev
-	TMPDIR=$(TMP) swiftc -swift-version 6 tools/dev.swift -o $(WORK)/dev/driver
-	TMPDIR=$(TMP) $(WORK)/dev/driver --profile dev-fast
+	TMPDIR=$(TMP) swift -swift-version 6 tools/dev.swift --profile dev-fast
 
 build:
 	mkdir -p $(TMP)
